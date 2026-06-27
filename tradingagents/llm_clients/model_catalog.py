@@ -81,6 +81,10 @@ _MINIMAX_MODELS: dict[str, list[ModelOption]] = {
 MODEL_OPTIONS: ProviderModeOptions = {
     "openai": {
         "quick": [
+            # gpt-4.1-mini is listed first because it is the configured demo quick-think
+            # model (DEFAULT_CONFIG["quick_think_llm"]) — must be here or warn_if_unknown_model
+            # fires a RuntimeWarning on every graph init (confirmed regression in Plan 01-02).
+            ("GPT-4.1 Mini - Efficient, high-throughput for agentic tasks", "gpt-4.1-mini"),
             ("GPT-5.4 Mini - Fast, strong coding and tool use", "gpt-5.4-mini"),
             ("GPT-5.4 Nano - Cheapest, high-volume tasks", "gpt-5.4-nano"),
             ("GPT-5.5 - Latest frontier, 1M context", "gpt-5.5"),
