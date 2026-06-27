@@ -311,8 +311,21 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
 
             # --- Fire-and-forget (Anti-Pattern 3: never block the graph) ---
             # (T-02-03 mitigation: request_duration is counted but HTTP is async)
+            # The thread target is itself fail-open so a mock or real client
+            # exception in the background thread does not surface as an
+            # unhandled thread exception in tests or production.
+            def _meter_safe(_payload: dict, _agent: str = agent) -> None:
+                try:
+                    self._client.meter_ai_completion(_payload)
+                except Exception:  # noqa: BLE001 — fail open, never block the run
+                    logger.warning(
+                        "Revenium background metering failed for agent %r — dropped",
+                        _agent,
+                        exc_info=True,
+                    )
+
             t = threading.Thread(
-                target=self._client.meter_ai_completion,
+                target=_meter_safe,
                 args=(payload,),
                 daemon=True,
                 name=f"rev-meter-{agent[:16]}",
