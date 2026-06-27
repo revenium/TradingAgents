@@ -8,16 +8,18 @@ _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 # of the existing default, so users can keep writing plain strings in
 # their .env file.
 _ENV_OVERRIDES = {
-    "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
-    "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
-    "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
-    "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
-    "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
-    "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
-    "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
-    "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
-    "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
-    "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_LLM_PROVIDER":             "llm_provider",
+    "TRADINGAGENTS_DEEP_THINK_LLM":           "deep_think_llm",
+    "TRADINGAGENTS_QUICK_THINK_LLM":          "quick_think_llm",
+    "TRADINGAGENTS_DEEP_THINK_PROVIDER":      "deep_think_provider",
+    "TRADINGAGENTS_QUICK_THINK_PROVIDER":     "quick_think_provider",
+    "TRADINGAGENTS_LLM_BACKEND_URL":          "backend_url",
+    "TRADINGAGENTS_OUTPUT_LANGUAGE":          "output_language",
+    "TRADINGAGENTS_MAX_DEBATE_ROUNDS":        "max_debate_rounds",
+    "TRADINGAGENTS_MAX_RISK_ROUNDS":          "max_risk_discuss_rounds",
+    "TRADINGAGENTS_CHECKPOINT_ENABLED":       "checkpoint_enabled",
+    "TRADINGAGENTS_BENCHMARK_TICKER":         "benchmark_ticker",
+    "TRADINGAGENTS_TEMPERATURE":              "temperature",
 }
 
 
@@ -52,9 +54,17 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
     # LLM settings
+    # llm_provider is the backward-compatible fallback; prefer the per-role
+    # provider keys (deep_think_provider / quick_think_provider) which drive
+    # the two distinct create_llm_client calls in TradingAgentsGraph.__init__.
     "llm_provider": "openai",
-    "deep_think_llm": "gpt-5.5",
-    "quick_think_llm": "gpt-5.4-mini",
+    "deep_think_llm": "claude-sonnet-4-6",       # Anthropic — Research Manager, Portfolio Manager
+    "quick_think_llm": "gpt-4.1-mini",           # OpenAI — analysts, trader
+    # Provider split: deep-think runs Anthropic, quick-think runs OpenAI to
+    # produce two distinct provider labels in Revenium's cross-provider view
+    # (MTR-04). Each falls back to llm_provider when unset.
+    "deep_think_provider": "anthropic",
+    "quick_think_provider": "openai",
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a

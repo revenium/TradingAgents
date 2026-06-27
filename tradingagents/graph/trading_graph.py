@@ -79,14 +79,21 @@ class TradingAgentsGraph:
         if self.callbacks:
             llm_kwargs["callbacks"] = self.callbacks
 
+        # Each role reads its own provider key; both fall back to llm_provider
+        # when deep_think_provider / quick_think_provider are unset. This drives
+        # the cross-provider cost view in Revenium (MTR-04) without hardcoding
+        # provider strings here — they come from config (repo convention).
+        deep_provider = self.config.get("deep_think_provider") or self.config["llm_provider"]
+        quick_provider = self.config.get("quick_think_provider") or self.config["llm_provider"]
+
         deep_client = create_llm_client(
-            provider=self.config["llm_provider"],
+            provider=deep_provider,
             model=self.config["deep_think_llm"],
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
         )
         quick_client = create_llm_client(
-            provider=self.config["llm_provider"],
+            provider=quick_provider,
             model=self.config["quick_think_llm"],
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
