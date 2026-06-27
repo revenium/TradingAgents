@@ -11,12 +11,14 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_research_manager(llm):
     structured_llm = bind_structured(llm, ResearchPlan, "Research Manager")
 
     def research_manager_node(state) -> dict:
+        _rev_agent.set("research_manager")  # D-12: per-agent Revenium attribution
         instrument_context = get_instrument_context_from_state(state)
         history = state["investment_debate_state"].get("history", "")
 

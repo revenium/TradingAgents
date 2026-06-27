@@ -2,10 +2,12 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_bull_researcher(llm):
     def bull_node(state) -> dict:
+        _rev_agent.set("bull_researcher")  # D-12: per-agent Revenium attribution
         investment_debate_state = state["investment_debate_state"]
         history = investment_debate_state.get("history", "")
         bull_history = investment_debate_state.get("bull_history", "")

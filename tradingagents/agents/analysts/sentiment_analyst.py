@@ -41,6 +41,7 @@ from tradingagents.agents.utils.structured import (
 )
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -58,6 +59,7 @@ def create_sentiment_analyst(llm):
     structured_llm = bind_structured(llm, SentimentReport, "Sentiment Analyst")
 
     def sentiment_analyst_node(state):
+        _rev_agent.set("sentiment_analyst")  # D-12: per-agent Revenium attribution
         ticker = state["company_of_interest"]
         end_date = state["trade_date"]
         start_date = _seven_days_back(end_date)

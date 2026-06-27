@@ -2,10 +2,12 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_aggressive_debator(llm):
     def aggressive_node(state) -> dict:
+        _rev_agent.set("aggressive_debator")  # D-12: per-agent Revenium attribution
         risk_debate_state = state["risk_debate_state"]
         history = risk_debate_state.get("history", "")
         aggressive_history = risk_debate_state.get("aggressive_history", "")

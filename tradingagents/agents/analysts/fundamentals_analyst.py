@@ -8,10 +8,12 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_fundamentals_analyst(llm):
     def fundamentals_analyst_node(state):
+        _rev_agent.set("fundamentals_analyst")  # D-12: per-agent Revenium attribution
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
 

@@ -8,10 +8,12 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_news_analyst(llm):
     def news_analyst_node(state):
+        _rev_agent.set("news_analyst")  # D-12: per-agent Revenium attribution
         current_date = state["trade_date"]
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"

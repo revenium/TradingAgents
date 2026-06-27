@@ -7,11 +7,13 @@ from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_verified_market_snapshot,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_market_analyst(llm):
 
     def market_analyst_node(state):
+        _rev_agent.set("market_analyst")  # D-12: per-agent Revenium attribution
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
 

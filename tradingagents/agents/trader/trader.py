@@ -15,12 +15,14 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_trader(llm):
     structured_llm = bind_structured(llm, TraderProposal, "Trader")
 
     def trader_node(state, name):
+        _rev_agent.set("trader")  # D-12: per-agent Revenium attribution
         company_name = state["company_of_interest"]
         instrument_context = get_instrument_context_from_state(state)
         investment_plan = state["investment_plan"]

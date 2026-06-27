@@ -19,12 +19,14 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.revenium.context import current_agent_name as _rev_agent
 
 
 def create_portfolio_manager(llm):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
+        _rev_agent.set("portfolio_manager")  # D-12: per-agent Revenium attribution
         instrument_context = get_instrument_context_from_state(state)
 
         history = state["risk_debate_state"]["history"]
