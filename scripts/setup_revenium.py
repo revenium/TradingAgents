@@ -361,8 +361,9 @@ def _setup_product(
                 "name": PRODUCT_NAME,
                 "version": "1.0.0",
                 "comingSoon": False,
-                # Minimal valid plan — type must be "SUBSCRIPTION"; four required fields:
-                # type / name / currency / graduated.
+                # Minimal valid plan — type must be "SUBSCRIPTION"; API requires a billing
+                # period for SUBSCRIPTION plans (period/periodCount are NOT optional).
+                # MONTH/1 is the smallest standard billing cycle; it is NOT the demo pricing.
                 # Exact $2.00/signal metered pricing (D-03) is DEFERRED to Phase 4
                 # monetize pillar — only the product's EXISTENCE is needed for attribution now.
                 "plan": {
@@ -370,6 +371,8 @@ def _setup_product(
                     "name": "Basic Plan",
                     "currency": "USD",
                     "graduated": False,
+                    "period": "MONTH",
+                    "periodCount": 1,
                 },
             },
         )
