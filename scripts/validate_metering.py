@@ -33,6 +33,10 @@ Usage:
     REVENIUM_METERING_API_KEY=rev_mk_... REVENIUM_METERING_BASE_URL=https://unreachable.invalid \\
     ANTHROPIC_API_KEY=... python scripts/validate_metering.py --skip-revenium-check
 
+    # MTR-04 multi-provider check (Anthropic + OpenAI, DISTINCT provider labels):
+    REVENIUM_METERING_API_KEY=rev_mk_... ANTHROPIC_API_KEY=... OPENAI_API_KEY=... \\
+        python scripts/validate_metering.py --multi-provider
+
 After the script exits 0 (local assertions pass), confirm in the Revenium
 dashboard that exactly ONE event arrived for trace_id printed below with:
   - organizationName: Revenium-Research-Desk
@@ -62,6 +66,133 @@ def _run_checks(checks: list[tuple[str, bool]]) -> tuple[int, int]:
     return passed, failed
 
 
+def _run_multi_provider(config: dict, skip_revenium_check: bool) -> int:
+    """Execute the MTR-04 two-provider validation.
+
+    Makes one call via the Anthropic deep-think model and one via the OpenAI
+    quick-think model; validates that both events carry DISTINCT provider labels
+    ('anthropic' and 'openai') and that no event is UNCLASSIFIED.
+
+    Returns 0 on all-PASS, 1 on any FAIL.
+    """
+    from tradingagents.llm_clients import create_llm_client
+    from tradingagents.revenium.callback import ReveniumCallbackHandler
+    from tradingagents.revenium.context import current_agent_name, revenium_run_context
+
+    # Provider→model pairs for MTR-04 (matches DEFAULT_CONFIG demo setup).
+    providers_to_check = [
+        ("anthropic", config.get("deep_think_llm", "claude-sonnet-4-6"), "market_analyst"),
+        ("openai",    config.get("quick_think_llm", "gpt-4.1-mini"),      "bull_researcher"),
+    ]
+
+    api_key: str = config.get("revenium_api_key", "")
+
+    print(f"\nMTR-04 Multi-Provider Validation — {datetime.utcnow().isoformat()}Z")
+    print("  Verifying DISTINCT provider labels for Anthropic and OpenAI.")
+    print()
+
+    all_passed = True
+    providers_seen: set[str] = set()
+
+    for provider, model, agent_name in providers_to_check:
+        print(f"[{provider.upper()}] {model}  (agent={agent_name})")
+
+        captured: list[dict] = []
+        handler = ReveniumCallbackHandler.from_config(config)
+        _original_meter = handler._client.meter_ai_completion
+
+        def _capture(payload: dict, _orig=_original_meter) -> None:
+            captured.append(payload)
+            if not skip_revenium_check:
+                _orig(payload)
+
+        handler._client.meter_ai_completion = _capture  # type: ignore[method-assign]
+
+        trace_id = ""
+        llm_exception: Exception | None = None
+
+        try:
+            client = create_llm_client(
+                provider=provider,
+                model=model,
+                callbacks=[handler],
+            )
+            llm = client.get_llm()
+
+            with revenium_run_context("VALIDATE-MP", datetime.utcnow().strftime("%Y-%m-%d")) as trace_id:
+                current_agent_name.set(agent_name)
+                print(f"  trace_id: {trace_id}")
+                print(f"  Making call to {provider}/{model}...")
+                response = llm.invoke("Reply with exactly three words: metering is working")
+                print(f"  Response: {str(response.content)[:60]!r}")
+
+        except Exception as exc:
+            llm_exception = exc
+            print(f"  ERROR: {exc}")
+
+        for t in list(handler._threads):
+            t.join(timeout=5.0)
+
+        print()
+        checks: list[tuple[str, bool]] = []
+        checks.append(("LLM call succeeded", llm_exception is None))
+        checks.append(("Exactly 1 event dispatched", len(captured) == 1))
+
+        if captured:
+            p = captured[0]
+            payload_provider = p.get("provider", "") or ""
+            checks.append((
+                f"provider label == '{provider}' (got {payload_provider!r})",
+                payload_provider.lower() == provider,
+            ))
+            checks.append(("Non-zero input_token_count", p.get("input_token_count", 0) > 0))
+            checks.append(("Non-zero output_token_count", p.get("output_token_count", 0) > 0))
+            checks.append(("agent not empty", bool(p.get("agent"))))
+            checks.append(("trace_id matches", p.get("trace_id") == trace_id))
+
+            provider_label = payload_provider.lower()
+            if provider_label and provider_label not in ("unknown", "unclassified", ""):
+                providers_seen.add(provider_label)
+        else:
+            checks.append(("Payload content checks skipped (no payload)", False))
+
+        p_passed, p_failed = _run_checks(checks)
+        if p_failed > 0:
+            all_passed = False
+
+        if trace_id:
+            print(f"\n  Dashboard trace_id: {trace_id}")
+        print()
+
+    # Final cross-provider assertion
+    print("Cross-provider assertion:")
+    distinct_check = (
+        "DISTINCT 'anthropic' and 'openai' provider labels",
+        "anthropic" in providers_seen and "openai" in providers_seen,
+    )
+    xp, xf = _run_checks([distinct_check])
+    if xf > 0:
+        all_passed = False
+
+    print()
+    print("MTR-04 dashboard checklist:")
+    print("  1. Two events with the trace_ids above — one Anthropic, one OpenAI")
+    print("  2. provider field clearly 'anthropic' vs 'openai' (not UNCLASSIFIED)")
+    print("  3. agent: 'market_analyst' for Anthropic, 'bull_researcher' for OpenAI")
+    print("  4. organizationName: Revenium-Research-Desk")
+    print("  5. productName: trading-signal")
+    print("  6. subscriber: john.demic+trading@revenium.io")
+    print("  7. Non-zero token counts on both events")
+    print()
+
+    if all_passed:
+        print("MTR-04 Multi-Provider PASSED: all checks green.")
+        return 0
+    else:
+        print("MTR-04 Multi-Provider FAILED: one or more checks failed.")
+        return 1
+
+
 def main() -> int:
     """Run the live metering validation.  Returns 0 on success, 1 on failure."""
     parser = argparse.ArgumentParser(
@@ -87,6 +218,15 @@ def main() -> int:
         action="store_true",
         help="Skip the Revenium connectivity check (useful for fail-open testing).",
     )
+    parser.add_argument(
+        "--multi-provider",
+        action="store_true",
+        help=(
+            "MTR-04 mode: make one Anthropic call (deep-think) and one OpenAI call"
+            " (quick-think) and assert DISTINCT provider labels in metering events."
+            " Requires both ANTHROPIC_API_KEY and OPENAI_API_KEY."
+        ),
+    )
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -111,6 +251,30 @@ def main() -> int:
     orig_deep_think_llm = config.get("deep_think_llm", "")
     orig_quick_think_provider = config.get("quick_think_provider", "")
     orig_quick_think_llm = config.get("quick_think_llm", "")
+
+    # ------------------------------------------------------------------
+    # Gate: REVENIUM_METERING_API_KEY must be set
+    # ------------------------------------------------------------------
+    api_key = config.get("revenium_api_key", "")
+    if not api_key and not args.skip_revenium_check:
+        print("FAIL  REVENIUM_METERING_API_KEY is not set — metering disabled.")
+        print(
+            "      Set it in your .env file and retry, or pass --skip-revenium-check"
+            " to test the fail-open path."
+        )
+        return 1
+
+    # ------------------------------------------------------------------
+    # Route: --multi-provider delegates to dedicated function
+    # ------------------------------------------------------------------
+    if args.multi_provider:
+        set_config(config)
+        config = get_config()
+        return _run_multi_provider(config, skip_revenium_check=args.skip_revenium_check)
+
+    # ------------------------------------------------------------------
+    # Single-provider path (existing behaviour)
+    # ------------------------------------------------------------------
 
     # Apply provider override if requested (updates all provider keys so that
     # create_llm_client always routes to the right backend).
@@ -142,18 +306,6 @@ def main() -> int:
         print(
             f"ERROR: no configured model found for provider '{effective_provider}'."
             "  Pass --model to specify one explicitly."
-        )
-        return 1
-
-    # ------------------------------------------------------------------
-    # Gate: REVENIUM_METERING_API_KEY must be set
-    # ------------------------------------------------------------------
-    api_key = config.get("revenium_api_key", "")
-    if not api_key and not args.skip_revenium_check:
-        print("FAIL  REVENIUM_METERING_API_KEY is not set — metering disabled.")
-        print(
-            "      Set it in your .env file and retry, or pass --skip-revenium-check"
-            " to test the fail-open path."
         )
         return 1
 
