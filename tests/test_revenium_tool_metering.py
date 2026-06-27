@@ -426,3 +426,82 @@ class TestAgentAttribution:
                 f"{agent_name}: expected task_type={expected_task_type!r}, "
                 f"got {actual_map.get(agent_name)!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# (e) Regression: decorator transport must be configured with prod /meter URL
+# ---------------------------------------------------------------------------
+
+class TestToolDecoratorConfiguresTransport:
+    """Regression: meter_tool must call configure() with the prod /meter URL.
+
+    Without the fix, meter_tool.py never called
+    revenium_metering.decorator.configure(), so _send_tool_event used the SDK's
+    module-level defaults (http://localhost:8082 / demo-key), causing
+    "Connection refused" on every tool event in live runs (×39 in the first
+    full pipeline run).
+    """
+
+    @pytest.mark.unit
+    def test_configure_called_with_prod_url_not_localhost(self):
+        """configure() receives the prod /meter URL (not localhost), the api_key,
+        is invoked before _send_tool_event, the tool return value is unchanged,
+        and a configure() exception is swallowed (fail-open).
+        """
+        from tradingagents.dataflows.config import get_config, set_config
+        from tradingagents.revenium.meter_tool import meter_tool
+
+        call_order: list[tuple] = []
+
+        def _fake_configure(**kw: object) -> None:
+            call_order.append(("configure", kw))
+
+        def _fake_send(**kw: object) -> None:
+            call_order.append(("send", kw))
+
+        config_orig = get_config()
+        set_config({
+            "revenium_api_key": "rev_mk_test",
+            "revenium_api_url": "https://api.revenium.ai",
+        })
+        try:
+            @meter_tool("test_tool")
+            def _my_tool() -> str:
+                return "fetched_data"
+
+            # --- Pass 1: normal call — assert URL, key, and call order ----------
+            with patch("revenium_metering.decorator.configure", side_effect=_fake_configure), \
+                 patch("revenium_metering.decorator._send_tool_event", side_effect=_fake_send):
+                result = _my_tool()
+
+            assert result == "fetched_data", "Return value must be unchanged"
+
+            names = [entry[0] for entry in call_order]
+            assert "configure" in names, "configure() must be called"
+            assert "send" in names, "_send_tool_event() must be called"
+            assert names.index("configure") < names.index("send"), (
+                f"configure() must precede _send_tool_event(); got order: {names}"
+            )
+
+            cfg_kwargs = next(kw for name, kw in call_order if name == "configure")
+            assert cfg_kwargs["metering_url"] == "https://api.revenium.ai/meter", (
+                f"Expected prod /meter URL, got {cfg_kwargs['metering_url']!r}"
+            )
+            assert "localhost" not in cfg_kwargs["metering_url"], (
+                f"Must NOT default to SDK localhost; got {cfg_kwargs['metering_url']!r}"
+            )
+            assert cfg_kwargs["api_key"] == "rev_mk_test"
+
+            # --- Pass 2: configure() raises — assert fail-open (result still returned) ---
+            def _raise(**kw: object) -> None:
+                raise RuntimeError("transport config boom")
+
+            with patch("revenium_metering.decorator.configure", side_effect=_raise), \
+                 patch("revenium_metering.decorator._send_tool_event"):
+                fail_open_result = _my_tool()
+
+            assert fail_open_result == "fetched_data", (
+                "Tool must still return its value when configure() raises"
+            )
+        finally:
+            set_config(config_orig)

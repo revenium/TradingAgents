@@ -90,11 +90,25 @@ def meter_tool(tool_id: str) -> Callable:
 
                 # Lazy SDK imports — avoid heavy pull at process start.
                 from revenium_metering.context import ReveniumContext  # noqa: PLC0415
-                from revenium_metering.decorator import _send_tool_event  # noqa: PLC0415
+                from revenium_metering.decorator import (  # noqa: PLC0415
+                    _send_tool_event,
+                    configure as _configure_tool_metering,
+                )
                 from tradingagents.revenium.context import (  # noqa: PLC0415
                     current_agent_name,
                     current_trace_id,
                 )
+
+                # Configure the decorator module's transport globals before
+                # calling _send_tool_event.  Without this call, the SDK uses
+                # its module-level defaults (http://localhost:8082 / demo-key),
+                # which causes "Connection refused" on every tool event in live
+                # runs.  Mirror the /meter normalisation that ReveniumMetering
+                # applies to its own base_url (see client.py).
+                _base = (cfg.get("revenium_api_url") or "https://api.revenium.ai").rstrip("/")
+                if not _base.endswith("/meter"):
+                    _base = _base + "/meter"
+                _configure_tool_metering(metering_url=_base, api_key=api_key)
 
                 ctx = ReveniumContext(
                     trace_id=current_trace_id.get("") or None,
