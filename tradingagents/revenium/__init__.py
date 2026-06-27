@@ -29,5 +29,6 @@ Module plan:
 from __future__ import annotations
 
 from tradingagents.revenium.callback import ReveniumCallbackHandler
+from tradingagents.revenium.meter_tool import meter_tool
 
-__all__: list[str] = ["ReveniumCallbackHandler"]
+__all__: list[str] = ["ReveniumCallbackHandler", "meter_tool"]

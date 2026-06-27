@@ -3,9 +3,11 @@ from typing import Annotated
 from langchain_core.tools import tool
 
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
+from tradingagents.revenium.meter_tool import meter_tool
 
 
 @tool
+@meter_tool("get_verified_market_snapshot")
 def get_verified_market_snapshot(
     symbol: Annotated[str, "ticker symbol of the company"],
     curr_date: Annotated[str, "the current trading date, YYYY-mm-dd"],

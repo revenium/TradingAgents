@@ -54,6 +54,39 @@ def _isolate_config():
     config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
 
 
+@pytest.fixture(autouse=True)
+def _reset_revenium_contextvars():
+    """Reset Revenium ContextVars to their defaults before and after each test.
+
+    Agent node functions now call current_agent_name.set(...) at their entry
+    point (D-12).  Without resetting, a test that executes an agent node leaks
+    its agent-name value into subsequent tests (e.g. test_memory_log.py runs
+    portfolio_manager_node which sets current_agent_name="portfolio_manager";
+    this contaminates test_agent_name_defaults_to_unknown in the next file).
+
+    The reset must be session-global (conftest.py) rather than module-local so
+    that any test in the suite that exercises an agent node is covered.
+    """
+    try:
+        from tradingagents.revenium.context import (
+            current_agent_name,
+            current_run_meta,
+            current_trace_id,
+        )
+    except ImportError:
+        # Revenium package not present; nothing to reset.
+        yield
+        return
+
+    tok_agent = current_agent_name.set("unknown")
+    tok_trace = current_trace_id.set("")
+    tok_meta = current_run_meta.set({})
+    yield
+    current_agent_name.reset(tok_agent)
+    current_trace_id.reset(tok_trace)
+    current_run_meta.reset(tok_meta)
+
+
 @pytest.fixture()
 def mock_llm_client():
     client = MagicMock()

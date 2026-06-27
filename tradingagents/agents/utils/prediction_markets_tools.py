@@ -3,9 +3,11 @@ from typing import Annotated
 from langchain_core.tools import tool
 
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.revenium.meter_tool import meter_tool
 
 
 @tool
+@meter_tool("get_prediction_markets")
 def get_prediction_markets(
     topic: Annotated[
         str,

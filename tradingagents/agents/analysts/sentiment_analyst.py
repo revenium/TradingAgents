@@ -68,6 +68,14 @@ def create_sentiment_analyst(llm):
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
+        #
+        # D-13: .func bypass — calling the underlying function directly skips
+        # LangChain's tool-invocation overhead (no tool-call round-trip needed
+        # here since data is injected into the prompt, not returned to the LLM).
+        # This also bypasses the @meter_tool wrapper; the get_news tool event is
+        # intentionally NOT emitted for this internal pre-fetch call.  The LLM
+        # metering event for the structured-output invocation below still fires
+        # via ReveniumCallbackHandler.
         news_block = get_news.func(ticker, start_date, end_date)
         stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
         reddit_block = fetch_reddit_posts(ticker)

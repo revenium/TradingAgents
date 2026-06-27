@@ -3,9 +3,11 @@ from typing import Annotated
 from langchain_core.tools import tool
 
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.revenium.meter_tool import meter_tool
 
 
 @tool
+@meter_tool("get_news")
 def get_news(
     ticker: Annotated[str, "Ticker symbol"],
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
@@ -24,6 +26,7 @@ def get_news(
     return route_to_vendor("get_news", ticker, start_date, end_date)
 
 @tool
+@meter_tool("get_global_news")
 def get_global_news(
     curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
     look_back_days: Annotated[int | None, "Days to look back; omit to use the configured default"] = None,
@@ -46,6 +49,7 @@ def get_global_news(
     return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
 
 @tool
+@meter_tool("get_insider_transactions")
 def get_insider_transactions(
     ticker: Annotated[str, "ticker symbol"],
 ) -> str:

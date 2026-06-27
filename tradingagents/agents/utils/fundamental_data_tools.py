@@ -3,9 +3,11 @@ from typing import Annotated
 from langchain_core.tools import tool
 
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.revenium.meter_tool import meter_tool
 
 
 @tool
+@meter_tool("get_fundamentals")
 def get_fundamentals(
     ticker: Annotated[str, "ticker symbol"],
     curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"],
@@ -23,6 +25,7 @@ def get_fundamentals(
 
 
 @tool
+@meter_tool("get_balance_sheet")
 def get_balance_sheet(
     ticker: Annotated[str, "ticker symbol"],
     freq: Annotated[str, "reporting frequency: annual/quarterly"] = "quarterly",
@@ -42,6 +45,7 @@ def get_balance_sheet(
 
 
 @tool
+@meter_tool("get_cashflow")
 def get_cashflow(
     ticker: Annotated[str, "ticker symbol"],
     freq: Annotated[str, "reporting frequency: annual/quarterly"] = "quarterly",
@@ -61,6 +65,7 @@ def get_cashflow(
 
 
 @tool
+@meter_tool("get_income_statement")
 def get_income_statement(
     ticker: Annotated[str, "ticker symbol"],
     freq: Annotated[str, "reporting frequency: annual/quarterly"] = "quarterly",
