@@ -20,6 +20,12 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":       "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":         "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":              "temperature",
+    # Revenium metering — env vars map to revenium_* config keys
+    "REVENIUM_METERING_API_KEY":    "revenium_api_key",
+    "REVENIUM_METERING_BASE_URL":   "revenium_api_url",
+    "REVENIUM_ORGANIZATION_NAME":   "revenium_organization_name",
+    "REVENIUM_PRODUCT_NAME":        "revenium_product_name",
+    "REVENIUM_SUBSCRIBER_ID":       "revenium_subscriber_id",
 }
 
 
@@ -141,5 +147,31 @@ DEFAULT_CONFIG = _apply_env_overrides({
         ".SS":  "000001.SS",   # Shanghai (SSE Composite)
         ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
         "":     "SPY",         # default for US-listed tickers (no suffix)
+    },
+    # Revenium metering — auto-enabled when revenium_api_key is non-empty (D-05).
+    # Key starts with rev_mk_* (metering key). When absent, the callback handler
+    # is a silent no-op so tests and offline runs are unaffected.
+    "revenium_api_key":            os.getenv("REVENIUM_METERING_API_KEY", ""),
+    "revenium_api_url":            os.getenv("REVENIUM_METERING_BASE_URL", "https://api.revenium.ai"),
+    # Attribution hierarchy — locked demo values (D-01..D-03).
+    # CONTEXT D-01 is the authority; do not use the ROADMAP "FCAT-Research-Desk" variant.
+    "revenium_organization_name":  "Revenium-Research-Desk",   # D-01
+    "revenium_product_name":       "trading-signal",           # D-03
+    "revenium_subscriber_id":      "john.demic+trading@revenium.io",  # D-02
+    # Task-type taxonomy (D-11) — maps internal LangGraph node names to
+    # Revenium pipeline-stage labels used for cost attribution by phase.
+    "revenium_task_type_map": {
+        "market_analyst":        "analysis",
+        "sentiment_analyst":     "analysis",
+        "news_analyst":          "analysis",
+        "fundamentals_analyst":  "analysis",
+        "bull_researcher":       "research_debate",
+        "bear_researcher":       "research_debate",
+        "research_manager":      "planning",
+        "trader":                "trade",
+        "aggressive_debator":    "risk_debate",
+        "conservative_debator":  "risk_debate",
+        "neutral_debator":       "risk_debate",
+        "portfolio_manager":     "decision",
     },
 })

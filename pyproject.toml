@@ -31,6 +31,8 @@ dependencies = [
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
     "yfinance>=1.4.1",
+    "revenium-python-sdk[langchain]>=0.1.9",
+    "revenium-metering>=6.8.2",
 ]
 
 [project.optional-dependencies]
