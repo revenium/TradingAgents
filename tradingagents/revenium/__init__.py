@@ -28,4 +28,6 @@ Module plan:
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from tradingagents.revenium.callback import ReveniumCallbackHandler
+
+__all__: list[str] = ["ReveniumCallbackHandler"]
