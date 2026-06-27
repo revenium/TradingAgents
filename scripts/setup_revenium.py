@@ -6,15 +6,21 @@ is safe: each entity is looked up by its natural key (name / email /
 product name) before creation, and existing entities are reported as
 "exists" rather than creating duplicates (D-08).
 
-Attribution values are read from tradingagents.revenium.config (D-01..D-03),
-not duplicated here.  Credentials are read from environment variables:
+SCOPING NOTE — tenantId vs teamId:
+    - Organizations are TENANT-scoped (tenantId on GET query + POST body).
+    - Products are TEAM-scoped (teamId in POST body; GET ?teamId=...).
+    - Subscribers and Subscriptions use neither as a scope param.
+    Passing a teamId where tenantId is expected returns 404.
 
-    REVENIUM_METERING_API_KEY   — rev_mk_* metering key (for validation only;
-                                   not used for write operations)
-    REVENIUM_SK_API_KEY         — rev_sk_* write/management key (required for
-                                   create/verify; D-10 least-privilege split)
-    REVENIUM_TEAM_ID            — team scope required by the platform management
-                                   API; passed as ?teamId= on every request
+Attribution values (org/product/subscriber names) are read from
+tradingagents.revenium.config (D-01..D-03).  Credentials and platform IDs
+are read from environment variables:
+
+    REVENIUM_SK_API_KEY         — rev_sk_* write/management key (required;
+                                   D-10 least-privilege split)
+    REVENIUM_TENANT_ID          — tenant scope for organizations (required)
+    REVENIUM_TEAM_ID            — team scope for products (required)
+    REVENIUM_OWNER_ID           — owner id for product creation (required)
     REVENIUM_PLATFORM_BASE_URL  — optional; defaults to
                                    https://api.prod.ai.hcapp.io/profitstream/v2/api
 
@@ -29,21 +35,21 @@ NOTE on host/path split:
 
 Usage:
     # Dry run — print intended actions, exit 0, no writes:
-    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=... \\
-        .venv/bin/python scripts/setup_revenium.py --dry-run
+    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TENANT_ID=... REVENIUM_TEAM_ID=... \\
+    REVENIUM_OWNER_ID=... .venv/bin/python scripts/setup_revenium.py --dry-run
 
     # Live run — create/verify hierarchy in Revenium account:
-    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=... \\
-        .venv/bin/python scripts/setup_revenium.py
+    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TENANT_ID=... REVENIUM_TEAM_ID=... \\
+    REVENIUM_OWNER_ID=... .venv/bin/python scripts/setup_revenium.py
 
     # With an override base URL (staging):
-    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=... \\
     REVENIUM_PLATFORM_BASE_URL=https://staging.hcapp.io/profitstream/v2/api \\
-        .venv/bin/python scripts/setup_revenium.py
+        .venv/bin/python scripts/setup_revenium.py --dry-run
 
 Security:
     - Key material is never printed or logged (repo convention: log symbolic names only).
     - The rev_sk_ key is validated for prefix format before any API call (Pitfall 8).
+    - tenant/team/owner IDs are platform identifiers, not secrets; they may be printed.
     - This script intentionally WRITES to Revenium (provisioning exception to fail-open).
       The fail-open convention applies to the metering hot path (Plan 02), not here.
 
@@ -85,16 +91,12 @@ except ImportError as _exc:
 # Override via REVENIUM_PLATFORM_BASE_URL without touching the metering config.
 _DEFAULT_PLATFORM_BASE_URL = "https://api.prod.ai.hcapp.io/profitstream/v2/api"
 
-# Product pricing (D-03: $2.00 per trading signal)
-PRODUCT_PRICE_USD = 2.00
-
 
 # ---------------------------------------------------------------------------
-# Key validation helpers
+# Key / env-var validation helpers
 # ---------------------------------------------------------------------------
 
 _VALID_SK_PREFIXES = ("rev_sk_",)
-_VALID_MK_PREFIXES = ("rev_mk_", "hak_")  # hak_ is legacy but still accepted
 
 
 def _validate_sk_key(key: str) -> None:
@@ -106,6 +108,16 @@ def _validate_sk_key(key: str) -> None:
         print("      Example correct format: rev_sk_xxxxxxxx...")
         print("      Get this key from: Revenium dashboard -> Settings -> API Keys")
         sys.exit(1)
+
+
+def _require_env(name: str, description: str) -> str:
+    """Return the env var value; print a human-readable error and exit 1 if missing."""
+    value = os.getenv(name, "")
+    if not value:
+        print(f"FAIL: {name} is not set.")
+        print(f"      {description}")
+        return ""
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -128,19 +140,17 @@ def _get(
     base_url: str,
     path: str,
     sk_key: str,
-    team_id: str,
     params: dict | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """GET from Revenium management REST API; return parsed JSON.
 
-    ``team_id`` is required by the platform API and is merged into the query
-    string as ``teamId`` before the caller's own params.
+    Each caller is responsible for supplying the correct scope params
+    (tenantId for org endpoints, teamId for product endpoints, neither for
+    subscriber/subscription endpoints).  This helper does NOT inject teamId
+    automatically — the old blanket-injection was the source of 404s.
     """
     url = f"{base_url.rstrip('/')}{path}"
-    merged: dict = {"teamId": team_id}
-    if params:
-        merged.update(params)
-    resp = requests.get(url, headers=_headers(sk_key), params=merged, timeout=15)
+    resp = requests.get(url, headers=_headers(sk_key), params=params or {}, timeout=15)
     resp.raise_for_status()
     return resp.json()
 
@@ -149,19 +159,17 @@ def _post(
     base_url: str,
     path: str,
     sk_key: str,
-    team_id: str,
     payload: dict,
-) -> dict[str, Any]:
+) -> Any:
     """POST to Revenium management REST API; return parsed JSON.
 
-    ``team_id`` is passed as a ``teamId`` query parameter (the platform API
-    uses URL-level team scoping, not a separate header).
+    Scope identifiers (tenantId / teamId / ownerId) must be included by the
+    caller in ``payload`` where the API requires them in the request body.
     """
     url = f"{base_url.rstrip('/')}{path}"
     resp = requests.post(
         url,
         headers=_headers(sk_key),
-        params={"teamId": team_id},
         json=payload,
         timeout=15,
     )
@@ -170,124 +178,204 @@ def _post(
 
 
 # ---------------------------------------------------------------------------
+# Defensive list-extraction helper
+# ---------------------------------------------------------------------------
+
+def _extract_list(data: Any) -> list:
+    """Extract a list from a response that may be a bare array or a paginated envelope.
+
+    Revenium list endpoints may return:
+    - A bare JSON array: [...]
+    - Spring-style pagination: {"content": [...], "totalElements": N, ...}
+    - HAL-style: {"_embedded": {"<type>List": [...]}}
+    - A dict with an "items" key: {"items": [...]}
+
+    Returns an empty list if none of the above match.
+    """
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if "content" in data and isinstance(data["content"], list):
+            return data["content"]
+        if "_embedded" in data and isinstance(data["_embedded"], dict):
+            for val in data["_embedded"].values():
+                if isinstance(val, list):
+                    return val
+        if "items" in data and isinstance(data["items"], list):
+            return data["items"]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Entity create-or-verify helpers
 # ---------------------------------------------------------------------------
 
-def _setup_organization(base_url: str, sk_key: str, team_id: str, dry_run: bool) -> str | None:
-    """Create or verify the Revenium Organization.
+def _setup_organization(base_url: str, sk_key: str, tenant_id: str, dry_run: bool) -> str | None:
+    """Create or verify the Revenium Organization (tenant-scoped).
 
-    Returns the organization ID on success, None on dry-run.
+    Organizations use tenantId (NOT teamId) on both the GET query and the
+    POST body.  Passing teamId here returns 404.
+
+    Returns the organization ID on success, None on dry-run or error.
     """
     print(f"  Organization: '{ORG_NAME}'")
     if dry_run:
-        print("    [dry-run] Would create/verify Organization")
+        print(f"    [dry-run] Would GET /organizations?tenantId={tenant_id} (find by name)")
+        print("    [dry-run] Would POST /organizations {name, tenantId} if not found")
         return None
 
+    # Lookup by tenantId; match by exact name client-side
     try:
-        # Look up by name first (idempotency)
-        data = _get(base_url, "/organizations", sk_key, team_id, params={"name": ORG_NAME})
-        orgs = data.get("items", data) if isinstance(data, dict) else data
-        for org in (orgs if isinstance(orgs, list) else []):
+        data = _get(base_url, "/organizations", sk_key, params={"tenantId": tenant_id})
+        for org in _extract_list(data):
             if org.get("name") == ORG_NAME:
-                print(f"    exists (id={org.get('id', 'n/a')})")
-                return str(org.get("id", ""))
+                org_id = str(org.get("id", ""))
+                print(f"    exists (id={org_id or 'n/a'})")
+                return org_id or None
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 404:
-            pass  # List endpoint may not exist; fall through to create
+            pass  # No orgs yet — fall through to create
         else:
             _handle_http_error("Organization lookup", exc)
             return None
 
-    # Create
+    # Create — tenantId is a REQUIRED body field
     try:
-        result = _post(base_url, "/organizations", sk_key, team_id, {"name": ORG_NAME})
-        print(f"    created (id={result.get('id', 'n/a')})")
-        return str(result.get("id", ""))
+        result = _post(base_url, "/organizations", sk_key, {"name": ORG_NAME, "tenantId": tenant_id})
+        org_id = str(result.get("id", ""))
+        print(f"    created (id={org_id or 'n/a'})")
+        return org_id or None
     except requests.HTTPError as exc:
         _handle_http_error("Organization create", exc)
         return None
 
 
-def _setup_subscriber(base_url: str, sk_key: str, team_id: str, dry_run: bool) -> str | None:
+def _setup_subscriber(
+    base_url: str, sk_key: str, org_id: str | None, dry_run: bool
+) -> str | None:
     """Create or verify the Revenium Subscriber.
+
+    Lookup uses the dedicated /subscribers/lookup-by-email?email= endpoint
+    (NOT /subscribers?email=).  A 404 on the lookup means "not found" —
+    treat it as a signal to create, not a fatal error.
+
+    Create sends organizationIds as a REQUIRED array (org must exist first).
 
     Returns the subscriber ID on success, None on dry-run or error.
     """
     print(f"  Subscriber: '{SUBSCRIBER_EMAIL}'")
     if dry_run:
-        print("    [dry-run] Would create/verify Subscriber")
+        print(f"    [dry-run] Would GET /subscribers/lookup-by-email?email={SUBSCRIBER_EMAIL}")
+        print("    [dry-run] Would POST /subscribers {email, firstName, lastName, organizationIds} if not found")
         return None
 
+    # Lookup by dedicated email-lookup endpoint; 404 = not found (not fatal)
+    subscriber_id: str | None = None
     try:
         data = _get(
-            base_url, "/subscribers", sk_key, team_id, params={"email": SUBSCRIBER_EMAIL}
+            base_url,
+            "/subscribers/lookup-by-email",
+            sk_key,
+            params={"email": SUBSCRIBER_EMAIL},
         )
-        subs = data.get("items", data) if isinstance(data, dict) else data
-        for sub in (subs if isinstance(subs, list) else []):
-            if sub.get("email") == SUBSCRIBER_EMAIL or sub.get("id") == SUBSCRIBER_EMAIL:
-                print(f"    exists (id={sub.get('id', 'n/a')})")
-                return str(sub.get("id", ""))
+        # Response is a single subscriber object (not a list)
+        if isinstance(data, dict) and data.get("id"):
+            subscriber_id = str(data["id"])
+            print(f"    exists (id={subscriber_id})")
+            return subscriber_id
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 404:
-            pass
+            pass  # "not found" — proceed to create
         else:
             _handle_http_error("Subscriber lookup", exc)
             return None
 
+    # Create — organizationIds is REQUIRED; org must exist first
+    org_ids: list[str] = [org_id] if org_id else []
     try:
         result = _post(
             base_url,
             "/subscribers",
             sk_key,
-            team_id,
-            {"id": SUBSCRIBER_EMAIL, "email": SUBSCRIBER_EMAIL},
+            {
+                "email": SUBSCRIBER_EMAIL,
+                "firstName": "Trading",
+                "lastName": "Agent",
+                "organizationIds": org_ids,
+            },
         )
-        print(f"    created (id={result.get('id', 'n/a')})")
-        return str(result.get("id", ""))
+        subscriber_id = str(result.get("id", ""))
+        print(f"    created (id={subscriber_id or 'n/a'})")
+        return subscriber_id or None
     except requests.HTTPError as exc:
         _handle_http_error("Subscriber create", exc)
         return None
 
 
-def _setup_product(base_url: str, sk_key: str, team_id: str, dry_run: bool) -> str | None:
-    """Create or verify the Revenium Product (trading-signal, $2.00/signal).
+def _setup_product(
+    base_url: str, sk_key: str, team_id: str, owner_id: str, dry_run: bool
+) -> str | None:
+    """Create or verify the Revenium Product (team-scoped).
+
+    Products use teamId in the POST body and as a GET query param.
+    ownerId is also a required body field for create.
+
+    Pricing note: exact $2.00/signal metered pricing (D-03) is intentionally
+    DEFERRED to the Phase 4 monetize pillar.  The minimal plan here only
+    needs the product to EXIST for attribution — the plan type must be
+    "SUBSCRIPTION" with the four required fields (type/name/currency/graduated).
 
     Returns the product ID on success, None on dry-run or error.
     """
-    print(f"  Product: '{PRODUCT_NAME}' @ ${PRODUCT_PRICE_USD:.2f}/signal")
+    print(f"  Product: '{PRODUCT_NAME}'")
     if dry_run:
-        print("    [dry-run] Would create/verify Product")
+        print(f"    [dry-run] Would GET /products?teamId={team_id} (find by name)")
+        print("    [dry-run] Would POST /products {teamId, ownerId, name, version, plan} if not found")
+        print("    [dry-run] Note: $2.00/signal metered pricing (D-03) deferred to Phase 4")
         return None
 
+    # Lookup by teamId; match by exact name client-side
     try:
-        data = _get(base_url, "/products", sk_key, team_id, params={"name": PRODUCT_NAME})
-        products = data.get("items", data) if isinstance(data, dict) else data
-        for prod in (products if isinstance(products, list) else []):
+        data = _get(base_url, "/products", sk_key, params={"teamId": team_id})
+        for prod in _extract_list(data):
             if prod.get("name") == PRODUCT_NAME:
-                print(f"    exists (id={prod.get('id', 'n/a')})")
-                return str(prod.get("id", ""))
+                product_id = str(prod.get("id", ""))
+                print(f"    exists (id={product_id or 'n/a'})")
+                return product_id or None
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 404:
-            pass
+            pass  # No products yet — fall through to create
         else:
             _handle_http_error("Product lookup", exc)
             return None
 
+    # Create — teamId + ownerId in body; plan is minimal (pricing deferred to Phase 4)
     try:
         result = _post(
             base_url,
             "/products",
             sk_key,
-            team_id,
             {
+                "teamId": team_id,
+                "ownerId": owner_id,
                 "name": PRODUCT_NAME,
-                "pricePerUnit": PRODUCT_PRICE_USD,
-                "unit": "signal",
-                "description": "One complete TradingAgents trading-signal analysis run",
+                "version": "1.0.0",
+                "comingSoon": False,
+                # Minimal valid plan — type must be "SUBSCRIPTION"; four required fields:
+                # type / name / currency / graduated.
+                # Exact $2.00/signal metered pricing (D-03) is DEFERRED to Phase 4
+                # monetize pillar — only the product's EXISTENCE is needed for attribution now.
+                "plan": {
+                    "type": "SUBSCRIPTION",
+                    "name": "Basic Plan",
+                    "currency": "USD",
+                    "graduated": False,
+                },
             },
         )
-        print(f"    created (id={result.get('id', 'n/a')})")
-        return str(result.get("id", ""))
+        product_id = str(result.get("id", ""))
+        print(f"    created (id={product_id or 'n/a'})")
+        return product_id or None
     except requests.HTTPError as exc:
         _handle_http_error("Product create", exc)
         return None
@@ -296,55 +384,78 @@ def _setup_product(base_url: str, sk_key: str, team_id: str, dry_run: bool) -> s
 def _setup_subscription(
     base_url: str,
     sk_key: str,
-    team_id: str,
     subscriber_id: str | None,
     product_id: str | None,
     dry_run: bool,
 ) -> bool:
     """Create or verify the Subscription (Subscriber → Product link).
 
+    Idempotency check: GET /users/<subscriber_id>/subscriptions?productId=<product_id>
+    If the returned list is non-empty, subscription already exists.
+
+    Create POST body is BEST-EFFORT — the official create-subscription doc is
+    broken/404 at time of writing; field names may be "userId"/"productId" or
+    "subscriberId"/"productId".  On any 4xx the raw response body is printed
+    verbatim so the field names can be corrected in a follow-up run.
+
     Returns True on success / exists, False on error.
     """
     print(f"  Subscription: '{SUBSCRIBER_EMAIL}' → '{PRODUCT_NAME}'")
     if dry_run:
-        print("    [dry-run] Would create/verify Subscription")
+        print("    [dry-run] Would GET /users/<subscriber_id>/subscriptions?productId=<product_id>")
+        print("    [dry-run] Would POST /subscriptions {subscriberId, productId} if not found")
+        print("    [dry-run] Note: subscription create schema is unverified/best-effort")
         return True
 
     if not subscriber_id or not product_id:
         print("    SKIP: subscriber or product ID unavailable; cannot create subscription")
         return False
 
+    # Idempotency lookup: check existing subscriptions for this user + product
     try:
         data = _get(
             base_url,
-            "/subscriptions",
+            f"/users/{subscriber_id}/subscriptions",
             sk_key,
-            team_id,
-            params={"subscriberId": subscriber_id, "productId": product_id},
+            params={"productId": product_id},
         )
-        subs = data.get("items", data) if isinstance(data, dict) else data
-        if subs and isinstance(subs, list) and len(subs) > 0:
-            print(f"    exists (id={subs[0].get('id', 'n/a')})")
+        existing = _extract_list(data)
+        if existing:
+            sub_id = existing[0].get("id", "n/a") if isinstance(existing[0], dict) else "n/a"
+            print(f"    exists (id={sub_id})")
             return True
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 404:
-            pass
+            pass  # No subscriptions yet — fall through to create
         else:
             _handle_http_error("Subscription lookup", exc)
             return False
 
+    # Create — UNVERIFIED schema; "subscriberId"/"productId" field names are best-effort
+    # (official create-subscription API doc returns 404).  On any 4xx, raw response
+    # body is printed so the caller can correct the field names.
+    url = f"{base_url.rstrip('/')}/subscriptions"
+    payload = {
+        # UNVERIFIED: may need "userId" instead of "subscriberId" — check raw error body below
+        "subscriberId": subscriber_id,
+        "productId": product_id,
+    }
     try:
-        result = _post(
-            base_url,
-            "/subscriptions",
-            sk_key,
-            team_id,
-            {"subscriberId": subscriber_id, "productId": product_id},
-        )
-        print(f"    created (id={result.get('id', 'n/a')})")
+        resp = requests.post(url, headers=_headers(sk_key), json=payload, timeout=15)
+        if not resp.ok:
+            raw_body = resp.text[:1000]
+            print(f"    FAIL [Subscription create] HTTP {resp.status_code}")
+            print(f"    Raw response body (verbatim — use to correct field names):\n    {raw_body}")
+            if resp.status_code == 401:
+                print("    Check that REVENIUM_SK_API_KEY is a valid rev_sk_* management key.")
+            elif resp.status_code == 403:
+                print("    The key may lack write permissions for subscriptions.")
+            return False
+        result = resp.json()
+        print(f"    created (id={result.get('id', 'n/a') if isinstance(result, dict) else 'n/a'})")
         return True
-    except requests.HTTPError as exc:
-        _handle_http_error("Subscription create", exc)
+    except Exception as exc:  # noqa: BLE001 — fail open on unexpected errors; report verbatim
+        print(f"    FAIL [Subscription create] unexpected error: {exc}")
         return False
 
 
@@ -367,7 +478,7 @@ def _handle_http_error(context: str, exc: requests.HTTPError) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    """Provision Revenium attribution hierarchy; return 0 on success, 1 on first error."""
+    """Provision Revenium attribution hierarchy; return 0 on success, 1 on any step error."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -383,34 +494,58 @@ def main() -> int:
     # The two hosts are intentionally separate; this script never touches the metering host.
     base_url = os.getenv("REVENIUM_PLATFORM_BASE_URL", _DEFAULT_PLATFORM_BASE_URL)
 
-    # Resolve team ID — required by the platform management API for scoping.
-    team_id: str = os.getenv("REVENIUM_TEAM_ID", "")
-    if not team_id:
-        print("FAIL: REVENIUM_TEAM_ID is not set.")
-        print("      Set this variable to your Revenium team identifier.")
-        print("      Find it in the Revenium dashboard URL or Settings -> Team.")
-        print("")
-        print("      For a dry run (no writes, no live credentials required):")
-        print("        REVENIUM_TEAM_ID=your-team-id python scripts/setup_revenium.py --dry-run")
-        return 1
+    # --- Required env vars ---
+    # Validate all required vars up front; collect errors so the user sees them all at once.
+    missing: list[str] = []
 
-    # Validate the write key (skip validation in dry-run mode — key may be absent)
     sk_key: str = os.getenv("REVENIUM_SK_API_KEY", "")
     if not args.dry_run:
         if not sk_key:
             print("FAIL: REVENIUM_SK_API_KEY is not set.")
             print("      Set this variable to your rev_sk_* write/management key.")
             print("      Get it from: Revenium dashboard -> Settings -> API Keys")
-            print("")
-            print("      For a dry run (no writes, no key required):")
-            print("        python scripts/setup_revenium.py --dry-run")
-            return 1
-        _validate_sk_key(sk_key)  # exits 1 on wrong prefix
+            missing.append("REVENIUM_SK_API_KEY")
+        else:
+            _validate_sk_key(sk_key)  # exits 1 on wrong prefix
+
+    tenant_id: str = os.getenv("REVENIUM_TENANT_ID", "")
+    if not tenant_id:
+        print("FAIL: REVENIUM_TENANT_ID is not set.")
+        print("      Required for organization scoping (tenantId on GET + POST).")
+        print("      Find it in: Revenium dashboard -> Settings -> Tenant / Organization.")
+        missing.append("REVENIUM_TENANT_ID")
+
+    team_id: str = os.getenv("REVENIUM_TEAM_ID", "")
+    if not team_id:
+        print("FAIL: REVENIUM_TEAM_ID is not set.")
+        print("      Required for product scoping (teamId in product body + GET query).")
+        print("      Find it in: Revenium dashboard URL or Settings -> Team.")
+        missing.append("REVENIUM_TEAM_ID")
+
+    owner_id: str = os.getenv("REVENIUM_OWNER_ID", "")
+    if not owner_id:
+        print("FAIL: REVENIUM_OWNER_ID is not set.")
+        print("      Required as ownerId in the product create body.")
+        print("      Find it in: Revenium dashboard -> Settings -> Team / Owner.")
+        missing.append("REVENIUM_OWNER_ID")
+
+    if missing:
+        print("")
+        print(f"      Missing required variable(s): {', '.join(missing)}")
+        print("")
+        print("      For a dry run set all four vars to placeholder values:")
+        print("        REVENIUM_SK_API_KEY=rev_sk_placeholder REVENIUM_TENANT_ID=t1 \\")
+        print("        REVENIUM_TEAM_ID=t2 REVENIUM_OWNER_ID=o1 \\")
+        print("        python scripts/setup_revenium.py --dry-run")
+        return 1
 
     mode = "[DRY-RUN]" if args.dry_run else "[LIVE]"
     print(f"Revenium attribution-hierarchy setup  {mode}")
     print(f"  Platform URL: {base_url}")
-    print("  Team ID:      (set)")
+    print(f"  SK API Key:   {'(set)' if sk_key else '(MISSING — dry-run only)'}")
+    print(f"  Tenant ID:    {tenant_id}")
+    print(f"  Team ID:      {team_id}")
+    print(f"  Owner ID:     {owner_id}")
     print(f"  Org:          {ORG_NAME}")
     print(f"  Subscriber:   {SUBSCRIBER_EMAIL}")
     print(f"  Product:      {PRODUCT_NAME}")
@@ -419,23 +554,23 @@ def main() -> int:
 
     failures = 0
 
-    # 1. Organization
-    org_id = _setup_organization(base_url, sk_key, team_id, args.dry_run)
+    # 1. Organization (tenant-scoped — tenantId on GET query + POST body)
+    org_id = _setup_organization(base_url, sk_key, tenant_id, args.dry_run)
     if not args.dry_run and org_id is None:
         failures += 1
 
-    # 2. Subscriber
-    subscriber_id = _setup_subscriber(base_url, sk_key, team_id, args.dry_run)
+    # 2. Subscriber (org must exist first so organizationIds can be populated)
+    subscriber_id = _setup_subscriber(base_url, sk_key, org_id, args.dry_run)
     if not args.dry_run and subscriber_id is None:
         failures += 1
 
-    # 3. Product
-    product_id = _setup_product(base_url, sk_key, team_id, args.dry_run)
+    # 3. Product (team-scoped — teamId + ownerId in body)
+    product_id = _setup_product(base_url, sk_key, team_id, owner_id, args.dry_run)
     if not args.dry_run and product_id is None:
         failures += 1
 
-    # 4. Subscription (Subscriber → Product)
-    ok = _setup_subscription(base_url, sk_key, team_id, subscriber_id, product_id, args.dry_run)
+    # 4. Subscription (Subscriber → Product; best-effort create with raw-body error reporting)
+    ok = _setup_subscription(base_url, sk_key, subscriber_id, product_id, args.dry_run)
     if not args.dry_run and not ok:
         failures += 1
 
