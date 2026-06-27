@@ -406,7 +406,7 @@ def _setup_subscription(
     print(f"  Subscription: '{SUBSCRIBER_EMAIL}' → '{PRODUCT_NAME}'")
     if dry_run:
         print("    [dry-run] Would GET /users/<subscriber_id>/subscriptions?productId=<product_id>")
-        print("    [dry-run] Would POST /subscriptions {subscriberId, productId} if not found")
+        print("    [dry-run] Would POST /subscriptions {name, subscriberId, productId} if not found")
         print("    [dry-run] Note: subscription create schema is unverified/best-effort")
         return True
 
@@ -439,6 +439,10 @@ def _setup_subscription(
     # body is printed so the caller can correct the field names.
     url = f"{base_url.rstrip('/')}/subscriptions"
     payload = {
+        # UNVERIFIED schema — official create-subscription doc is 404 at time of writing.
+        # "name" was discovered as required via live HTTP 400 validation error.
+        # Further required fields may surface on the next run; the raw body below shows them.
+        "name": f"{PRODUCT_NAME} - {SUBSCRIBER_EMAIL}",
         # UNVERIFIED: may need "userId" instead of "subscriberId" — check raw error body below
         "subscriberId": subscriber_id,
         "productId": product_id,
