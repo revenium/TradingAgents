@@ -17,13 +17,17 @@ Requirements:
   - pip install ".[dev]" (tests/dev deps)
 
 Usage:
-    # Anthropic (deep-think model):
+    # Anthropic (deep-think model, default):
     REVENIUM_METERING_API_KEY=rev_mk_... ANTHROPIC_API_KEY=... \\
         python scripts/validate_metering.py
 
-    # OpenAI (quick-think model):
+    # OpenAI — auto-resolves to gpt-4.1-mini (the configured quick-think model):
     REVENIUM_METERING_API_KEY=rev_mk_... OPENAI_API_KEY=... \\
         python scripts/validate_metering.py --provider openai
+
+    # Explicit model override (e.g. a provider not in the configured pair list):
+    REVENIUM_METERING_API_KEY=rev_mk_... OPENAI_API_KEY=... \\
+        python scripts/validate_metering.py --provider openai --model gpt-4o
 
     # Fail-open check (Revenium unreachable → should WARN, not crash):
     REVENIUM_METERING_API_KEY=rev_mk_... REVENIUM_METERING_BASE_URL=https://unreachable.invalid \\
@@ -42,8 +46,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
-import uuid
 from datetime import datetime
 
 
@@ -72,6 +74,15 @@ def main() -> int:
         help="LLM provider override (anthropic, openai).  Defaults to config default.",
     )
     parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "LLM model override; defaults to the model configured for the chosen provider."
+            "  Use this when --provider names a provider that is not in the configured"
+            " deep_think_provider / quick_think_provider pair."
+        ),
+    )
+    parser.add_argument(
         "--skip-revenium-check",
         action="store_true",
         help="Skip the Revenium connectivity check (useful for fail-open testing).",
@@ -93,7 +104,16 @@ def main() -> int:
 
     config = dict(DEFAULT_CONFIG)
 
-    # Apply provider override if requested
+    # Capture the ORIGINAL provider→model pairs before any override so the
+    # matching logic below can still find the right model after the override
+    # clobbers both provider keys to the same value.
+    orig_deep_think_provider = config.get("deep_think_provider", "")
+    orig_deep_think_llm = config.get("deep_think_llm", "")
+    orig_quick_think_provider = config.get("quick_think_provider", "")
+    orig_quick_think_llm = config.get("quick_think_llm", "")
+
+    # Apply provider override if requested (updates all provider keys so that
+    # create_llm_client always routes to the right backend).
     if args.provider:
         config["llm_provider"] = args.provider
         config["deep_think_provider"] = args.provider
@@ -101,6 +121,29 @@ def main() -> int:
 
     set_config(config)
     config = get_config()
+
+    # Resolve the effective (provider, model) pair for the single validation call.
+    # Priority for provider: --provider flag → deep_think_provider → llm_provider.
+    # Priority for model:    --model flag → configured model whose provider matches
+    #                        effective_provider (matched against ORIGINAL pairs,
+    #                        captured above before the override) → fail-fast.
+    effective_provider = (
+        config.get("deep_think_provider")
+        or config.get("llm_provider", "anthropic")
+    )
+
+    if args.model:
+        effective_model = args.model
+    elif effective_provider == orig_quick_think_provider and orig_quick_think_llm:
+        effective_model = orig_quick_think_llm
+    elif effective_provider == orig_deep_think_provider and orig_deep_think_llm:
+        effective_model = orig_deep_think_llm
+    else:
+        print(
+            f"ERROR: no configured model found for provider '{effective_provider}'."
+            "  Pass --model to specify one explicitly."
+        )
+        return 1
 
     # ------------------------------------------------------------------
     # Gate: REVENIUM_METERING_API_KEY must be set
@@ -131,8 +174,8 @@ def main() -> int:
     handler._client.meter_ai_completion = _capture_and_meter  # type: ignore[method-assign]
 
     print(f"\nValidating Revenium metering — {datetime.utcnow().isoformat()}Z")
-    print(f"  Provider      : {config.get('deep_think_provider') or config.get('llm_provider')}")
-    print(f"  Model         : {config.get('deep_think_llm')}")
+    print(f"  Provider      : {effective_provider}")
+    print(f"  Model         : {effective_model}")
     print(f"  Metering key  : {api_key[:12]}... (hidden)" if api_key else "  Metering key  : (absent)")
     print()
 
@@ -143,8 +186,8 @@ def main() -> int:
     llm_exception: Exception | None = None
 
     try:
-        provider = config.get("deep_think_provider") or config.get("llm_provider", "anthropic")
-        model = config.get("deep_think_llm", "claude-sonnet-4-6")
+        provider = effective_provider
+        model = effective_model
         client = create_llm_client(provider=provider, model=model, callbacks=[handler])
         llm = client.get_llm()
 
