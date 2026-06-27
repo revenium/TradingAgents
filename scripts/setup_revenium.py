@@ -387,6 +387,8 @@ def _setup_product(
 def _setup_subscription(
     base_url: str,
     sk_key: str,
+    owner_id: str,
+    team_id: str,
     subscriber_id: str | None,
     product_id: str | None,
     dry_run: bool,
@@ -397,16 +399,20 @@ def _setup_subscription(
     If the returned list is non-empty, subscription already exists.
 
     Create POST body is BEST-EFFORT — the official create-subscription doc is
-    broken/404 at time of writing; field names may be "userId"/"productId" or
-    "subscriberId"/"productId".  On any 4xx the raw response body is printed
-    verbatim so the field names can be corrected in a follow-up run.
+    broken/404 at time of writing.  Fields ownerId, clientEmailAddress, and teamId
+    were discovered as required via live HTTP 400 batch validation; further required
+    fields may still surface.  On any 4xx the raw response body is printed verbatim
+    so the field names can be corrected in a follow-up run.
 
     Returns True on success / exists, False on error.
     """
     print(f"  Subscription: '{SUBSCRIBER_EMAIL}' → '{PRODUCT_NAME}'")
     if dry_run:
         print("    [dry-run] Would GET /users/<subscriber_id>/subscriptions?productId=<product_id>")
-        print("    [dry-run] Would POST /subscriptions {name, subscriberId, productId} if not found")
+        print(
+            "    [dry-run] Would POST /subscriptions"
+            " {name, subscriberId, productId, ownerId, clientEmailAddress, teamId} if not found"
+        )
         print("    [dry-run] Note: subscription create schema is unverified/best-effort")
         return True
 
@@ -434,18 +440,25 @@ def _setup_subscription(
             _handle_http_error("Subscription lookup", exc)
             return False
 
-    # Create — UNVERIFIED schema; "subscriberId"/"productId" field names are best-effort
-    # (official create-subscription API doc returns 404).  On any 4xx, raw response
-    # body is printed so the caller can correct the field names.
+    # Create — UNVERIFIED schema; field names are best-effort (official create-subscription
+    # API doc returns 404).  "name" was discovered as required first; ownerId,
+    # clientEmailAddress, and teamId were subsequently discovered via live HTTP 400
+    # batch validation.  Further required fields may still surface on the next run;
+    # the raw body below shows them.  On any 4xx, raw response body is printed so
+    # the caller can correct the field names.
     url = f"{base_url.rstrip('/')}/subscriptions"
     payload = {
         # UNVERIFIED schema — official create-subscription doc is 404 at time of writing.
-        # "name" was discovered as required via live HTTP 400 validation error.
-        # Further required fields may surface on the next run; the raw body below shows them.
+        # "name" discovered as required via live HTTP 400; ownerId/clientEmailAddress/teamId
+        # discovered in a subsequent live 400 batch-validation response.
+        # Further required fields may surface on the next run; see raw body below.
         "name": f"{PRODUCT_NAME} - {SUBSCRIBER_EMAIL}",
         # UNVERIFIED: may need "userId" instead of "subscriberId" — check raw error body below
         "subscriberId": subscriber_id,
         "productId": product_id,
+        "ownerId": owner_id,
+        "clientEmailAddress": SUBSCRIBER_EMAIL,
+        "teamId": team_id,
     }
     try:
         resp = requests.post(url, headers=_headers(sk_key), json=payload, timeout=15)
@@ -577,7 +590,7 @@ def main() -> int:
         failures += 1
 
     # 4. Subscription (Subscriber → Product; best-effort create with raw-body error reporting)
-    ok = _setup_subscription(base_url, sk_key, subscriber_id, product_id, args.dry_run)
+    ok = _setup_subscription(base_url, sk_key, owner_id, team_id, subscriber_id, product_id, args.dry_run)
     if not args.dry_run and not ok:
         failures += 1
 
