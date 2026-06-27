@@ -1041,6 +1041,17 @@ def run_analysis(checkpoint: bool = False):
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
 
+    # Build exactly ONE Revenium handler for the entire run (D-05: silent no-op
+    # when REVENIUM_METERING_API_KEY is absent so this path never breaks a run).
+    # This same instance is passed to both TradingAgentsGraph and get_graph_args
+    # below — reusing the same object is critical to avoid double-counting.
+    # The graph's dedup guard (Plan 01-02) ensures that when an enabled handler
+    # is already present in the caller-supplied callbacks list, the graph does
+    # NOT append a second internal handler, so exactly ONE handler is active.
+    from tradingagents.revenium.callback import ReveniumCallbackHandler
+    revenium_handler = ReveniumCallbackHandler.from_config(config)
+    _all_callbacks = [stats_handler] + ([revenium_handler] if revenium_handler.enabled else [])
+
     # Normalize analyst selection to predefined order (selection is a 'set', order is fixed)
     selected_set = {analyst.value for analyst in selections["analysts"]}
     selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
@@ -1050,12 +1061,14 @@ def run_analysis(checkpoint: bool = False):
     )
     analyst_wall_time_tracker = AnalystWallTimeTracker(analyst_execution_plan)
 
-    # Initialize the graph with callbacks bound to LLMs
+    # Initialize the graph with callbacks bound to LLMs.
+    # Passing revenium_handler here lets the graph's dedup guard detect it and
+    # skip building a second internal handler — exactly one Revenium path active.
     graph = TradingAgentsGraph(
         selected_analyst_keys,
         config=config,
         debug=True,
-        callbacks=[stats_handler],
+        callbacks=_all_callbacks,
     )
 
     # Initialize message buffer with selected analysts
@@ -1158,8 +1171,10 @@ def run_analysis(checkpoint: bool = False):
             instrument_context=instrument_context,
         )
         # Pass callbacks to graph config for tool execution tracking
-        # (LLM tracking is handled separately via LLM constructor)
-        args = graph.propagator.get_graph_args(callbacks=[stats_handler])
+        # (LLM tracking is handled separately via LLM constructor).
+        # Reuse the same _all_callbacks list so the revenium_handler also tracks
+        # analyst tool invocations via on_tool_start (same instance, no double-count).
+        args = graph.propagator.get_graph_args(callbacks=_all_callbacks)
 
         # Stream the analysis
         trace = []
