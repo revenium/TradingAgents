@@ -91,6 +91,13 @@ except ImportError as _exc:
 # Override via REVENIUM_PLATFORM_BASE_URL without touching the metering config.
 _DEFAULT_PLATFORM_BASE_URL = "https://api.prod.ai.hcapp.io/profitstream/v2/api"
 
+# ---------------------------------------------------------------------------
+# Cost-rule provisioning constants (CTL-04, D-06/D-07)
+# ---------------------------------------------------------------------------
+DEMO_RULE_NAME = "TradingAgents Demo Budget"
+DEMO_RULE_HARD_LIMIT = 1.00    # $1.00 DAILY — tune per timing dry-run
+DEMO_RULE_WARN_THRESHOLD = 0.50
+
 
 # ---------------------------------------------------------------------------
 # Key / env-var validation helpers
@@ -168,6 +175,28 @@ def _post(
     """
     url = f"{base_url.rstrip('/')}{path}"
     resp = requests.post(
+        url,
+        headers=_headers(sk_key),
+        json=payload,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _patch(
+    base_url: str,
+    path: str,
+    sk_key: str,
+    payload: dict,
+) -> Any:
+    """PATCH to Revenium management REST API; return parsed JSON.
+
+    Used by the cost-rule idempotency path to update an existing rule's
+    shadowMode/enabled state without recreating it.
+    """
+    url = f"{base_url.rstrip('/')}{path}"
+    resp = requests.patch(
         url,
         headers=_headers(sk_key),
         json=payload,
@@ -493,6 +522,92 @@ def _handle_http_error(context: str, exc: requests.HTTPError) -> None:
         print("    The key may lack the required write permissions for this resource.")
 
 
+def _setup_cost_rule(base_url: str, sk_key: str, team_id: str, dry_run: bool) -> bool:
+    """Create or verify the enforce-mode cost rule (CTL-04, D-06).
+
+    Idempotency: look up by name, create if missing, PATCH to enforce mode
+    if found in shadow mode.  Returns True on success or dry-run.
+
+    Host note: uses the management base URL (api.prod.ai.hcapp.io), NOT the
+    enforcement polling host (api.revenium.ai).  The existing ``base_url``
+    variable in main() is correct — do not substitute the metering host here
+    (Pitfall #4 from 03-RESEARCH.md).
+
+    Body note: ``teamId`` MUST be in the POST body for correct rule scoping
+    (Pitfall #6).  ``shadowMode: False`` MUST be explicit — observe-only rules
+    never produce the dashboard ENFORCEMENT_VIOLATION event (D-07).
+    """
+    print(f"  Cost rule: '{DEMO_RULE_NAME}' (TOTAL_COST DAILY ${DEMO_RULE_HARD_LIMIT})")
+    if dry_run:
+        print(f"    [dry-run] Would GET /ai/cost-controls?teamId={team_id} (find by name)")
+        print("    [dry-run] Would POST /ai/cost-controls {name, metricType, DAILY, BLOCK,"
+              " hardLimit, shadowMode:false, ORGANIZATION filter} if not found")
+        print("    [dry-run] Would PATCH /ai/cost-controls/{id} {shadowMode:false, enabled:true}"
+              " if found in shadow mode")
+        return True
+
+    # Lookup existing rules for this team; match by name client-side
+    try:
+        data = _get(base_url, "/ai/cost-controls", sk_key, params={"teamId": team_id})
+        for rule in _extract_list(data):
+            if rule.get("name") == DEMO_RULE_NAME or rule.get("label") == DEMO_RULE_NAME:
+                rule_id = str(rule.get("id", ""))
+                shadow = rule.get("shadowMode", True)
+                enabled = rule.get("enabled", False)
+                if not shadow and enabled:
+                    print(f"    exists in enforce mode (id={rule_id}) — OK")
+                    return True
+                # Found but in wrong state — PATCH to enforce mode (D-07)
+                try:
+                    _patch(base_url, f"/ai/cost-controls/{rule_id}", sk_key,
+                           {"shadowMode": False, "enabled": True})
+                    print(f"    updated to enforce mode (id={rule_id})")
+                    return True
+                except requests.HTTPError as exc:
+                    _handle_http_error("Cost rule PATCH", exc)
+                    return False
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            pass  # No rules yet — fall through to create
+        else:
+            _handle_http_error("Cost rule lookup", exc)
+            return False
+
+    # Create in enforce mode — shadowMode:false is the demo-critical field (D-07)
+    try:
+        result = _post(base_url, "/ai/cost-controls", sk_key, {
+            "name": DEMO_RULE_NAME,
+            "description": (
+                "Demo cost gate for FCAT — enforce mode. "
+                "Scoped to Revenium-Research-Desk org. "
+                "Halts the run mid-debate for the control pillar demo."
+            ),
+            "metricType": "TOTAL_COST",
+            "windowType": "DAILY",
+            "action": "BLOCK",
+            "groupBy": "AGENT",
+            "hardLimit": DEMO_RULE_HARD_LIMIT,
+            "warnThreshold": DEMO_RULE_WARN_THRESHOLD,
+            "shadowMode": False,    # D-07: MUST be false; shadow mode silently skips enforcement
+            "enabled": True,
+            "filters": [
+                {
+                    "dimension": "ORGANIZATION",
+                    "operator": "IS",
+                    "value": ORG_NAME,  # "Revenium-Research-Desk" — D-04: org-scoped filter
+                },
+            ],
+            "teamId": team_id,           # Pitfall #6: teamId MUST be in the POST body
+            "notificationChannelIds": [],
+        })
+        rule_id = str(result.get("id", ""))
+        print(f"    created in enforce mode (id={rule_id or 'n/a'})")
+        return True
+    except requests.HTTPError as exc:
+        _handle_http_error("Cost rule create", exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -591,6 +706,11 @@ def main() -> int:
 
     # 4. Subscription (Subscriber → Product; best-effort create with raw-body error reporting)
     ok = _setup_subscription(base_url, sk_key, owner_id, team_id, subscriber_id, product_id, args.dry_run)
+    if not args.dry_run and not ok:
+        failures += 1
+
+    # 5. Cost rule (enforce-mode, TOTAL_COST DAILY $1.00 — CTL-04, D-06)
+    ok = _setup_cost_rule(base_url, sk_key, team_id, args.dry_run)
     if not args.dry_run and not ok:
         failures += 1
 
