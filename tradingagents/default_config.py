@@ -188,8 +188,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # rev_sk_* write-scope key (NOT rev_mk_*; metering-only keys are 403 on jobs writes).
     # When empty the billing emitter is a silent no-op (DMO-04).
     "revenium_billing_api_key":     os.getenv("REVENIUM_BILLING_API_KEY", ""),
-    # Jobs/Outcomes profitstream host. The AgenticOutcomeClient default is api.revenium.io;
-    # set REVENIUM_PROFITSTREAM_BASE_URL to api.prod.ai.hcapp.io/profitstream/v2/api
-    # if validate_billing.py shows the default host 404s (Open Question 1).
+    # Jobs/Outcomes profitstream host — must be HOST-ONLY (no path suffix).
+    # The AgenticOutcomeClient appends /profitstream/v2/api itself; supplying the full
+    # path doubles it and produces a 404.  The default api.revenium.io 403s on jobs
+    # writes; set REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io for live runs.
     "revenium_profitstream_url":    os.getenv("REVENIUM_PROFITSTREAM_BASE_URL", "https://api.revenium.io"),
 })

@@ -17,8 +17,10 @@ Requirements (for live mode):
   - REVENIUM_BILLING_API_KEY set to a ``rev_sk_*`` write-scope key.
     A metering-only ``rev_mk_*`` key is 403 on jobs write endpoints.
   - REVENIUM_PROFITSTREAM_BASE_URL (optional; defaults to https://api.revenium.io).
-    Set to https://api.prod.ai.hcapp.io/profitstream/v2/api if the default
-    host returns 404 (Open Question 1 from RESEARCH.md).
+    Must be HOST-ONLY: https://api.prod.ai.hcapp.io — the AgenticOutcomeClient
+    appends /profitstream/v2/api itself.  Supplying the full path produces a
+    doubled path and a 404.  The default host https://api.revenium.io returns
+    403 on jobs write endpoints; always set the host-only form for live runs.
 
 Keyless mode:
   When REVENIUM_BILLING_API_KEY is absent the script prints a skip message
@@ -30,7 +32,7 @@ Usage:
 
     # Live (with billing key):
     REVENIUM_BILLING_API_KEY=rev_sk_... python scripts/validate_billing.py
-    REVENIUM_BILLING_API_KEY=rev_sk_... REVENIUM_PROFITSTREAM_BASE_URL=https://... \\
+    REVENIUM_BILLING_API_KEY=rev_sk_... REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\
         python scripts/validate_billing.py --ticker NVDA --date 2026-06-28
 """
 
@@ -198,8 +200,8 @@ def main() -> int:
         print(f"  1. A job with agentic_job_id={trace_id} in the jobs list")
         print(f"  2. An outcome with result=SUCCESS and outcomeValue={signal_price}")
         print(f"  3. Profitstream host used: {profitstream_host}")
-        print("  4. If the job does not appear, set REVENIUM_PROFITSTREAM_BASE_URL to the")
-        print( "     alternate host: https://api.prod.ai.hcapp.io/profitstream/v2/api")
+        print("  4. REVENIUM_PROFITSTREAM_BASE_URL must be HOST-ONLY: https://api.prod.ai.hcapp.io")
+        print("     (the SDK appends /profitstream/v2/api; full-path value doubles the path → 404)")
         return 0
     else:
         print(f"Billing FAILED: {failed}/{passed + failed} check(s) failed.")
