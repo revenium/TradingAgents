@@ -268,6 +268,49 @@ class TestCallbackHandlerEnforcementGate:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _get_enforcement_base_url() config resolution (GAP-CTL03-01)
+# ---------------------------------------------------------------------------
+
+class TestEnforcementBaseUrlResolution:
+    """Config-resolution tests for enforcement._get_enforcement_base_url() (GAP-CTL03-01).
+
+    These tests are keyless (no live credentials, no network — D-10 discipline).
+    They prove:
+    1. When REVENIUM_ENFORCEMENT_BASE_URL is set, the function returns it verbatim
+       (trailing slash stripped), so the compiled-rules feed path is correct.
+    2. When REVENIUM_ENFORCEMENT_BASE_URL is unset, the function falls back to the
+       bare metering origin (scheme://netloc with no context path) — documenting
+       the 404 cause that GAP-CTL03-01 closes via .env.example documentation.
+    """
+
+    @pytest.mark.unit
+    def test_explicit_enforcement_base_url_returned_verbatim(self, monkeypatch):
+        """_get_enforcement_base_url() returns REVENIUM_ENFORCEMENT_BASE_URL verbatim (trailing slash stripped).
+
+        Satisfies GAP-CTL03-01 constraint (c): when the operator sets
+        REVENIUM_ENFORCEMENT_BASE_URL=https://api.revenium.ai/profitstream the
+        SDK uses that exact value as the base for the compiled-rules fetch.
+        """
+        monkeypatch.setenv("REVENIUM_ENFORCEMENT_BASE_URL", "https://api.revenium.ai/profitstream")
+        assert enforcement._get_enforcement_base_url() == "https://api.revenium.ai/profitstream"
+
+    @pytest.mark.unit
+    def test_fallback_to_bare_metering_origin_when_enforcement_url_unset(self, monkeypatch):
+        """Without REVENIUM_ENFORCEMENT_BASE_URL the function falls back to the bare metering origin.
+
+        Documents the 404 cause identified in the GAP-CTL03-01 spike: the bare origin
+        (https://api.revenium.ai) lacks the /profitstream context path required by the
+        compiled-rules feed, so the enforcement gate can never arm without the explicit var.
+        """
+        monkeypatch.delenv("REVENIUM_ENFORCEMENT_BASE_URL", raising=False)
+        # Set the metering base URL deterministically to avoid ambient env dependency.
+        monkeypatch.setenv("REVENIUM_METERING_BASE_URL", "https://api.revenium.ai/meter/")
+        result = enforcement._get_enforcement_base_url()
+        assert result == "https://api.revenium.ai"
+        assert "/profitstream" not in result
+
+
+# ---------------------------------------------------------------------------
 # Tests: _render_budget_halt_panel (CTL-02, D-05, T-03-01)
 # ---------------------------------------------------------------------------
 
