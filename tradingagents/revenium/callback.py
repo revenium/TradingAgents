@@ -72,12 +72,13 @@ from langchain_core.outputs import LLMResult
 from revenium_middleware._core import BudgetExceededError, check_enforcement
 
 from tradingagents.revenium.client import ReveniumClient
-from tradingagents.revenium.config import attribution_from_config, task_type_for_node
+from tradingagents.revenium.config import attribution_from_config
 from tradingagents.revenium.context import (
     current_agent_name,
     current_run_meta,
     current_trace_id,
 )
+from tradingagents.revenium.pricing import compute_cost  # Phase 4 local cost estimate
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,10 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                 # Drop any per-call state left over from a malformed/aborted run
                 # so it does not bleed into the next propagate() call (WR-01).
                 self._call_state.clear()
+                # Reset per-run cost panel accumulators so ×N counts and totals
+                # do not bleed across runs (Phase 4 Pitfall 4).
+                self.agent_costs.clear()
+                self.run_total_tokens = 0
                 # Prune finished daemon threads so the list does not grow
                 # unbounded across reused-handler runs (CLI backtest / multi-ticker
                 # scans); keeps the test-side join loop bounded to live threads (WR-02).
@@ -473,12 +478,17 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                 payload["trace_type"] = self._trace_type
 
             # --- Update cost accumulators (Phase 4 CLI panel) ---
+            # Compute local cost estimate BEFORE taking the lock (no I/O; pure math).
+            local_cost = compute_cost(provider, model, input_tokens, output_tokens)
             with self._lock:
                 entry = self.agent_costs.setdefault(
-                    agent, {"input_tokens": 0, "output_tokens": 0}
+                    agent,
+                    {"input_tokens": 0, "output_tokens": 0, "cost": 0.0, "call_count": 0},
                 )
                 entry["input_tokens"] += input_tokens
                 entry["output_tokens"] += output_tokens
+                entry["cost"] += local_cost
+                entry["call_count"] += 1
                 self.run_total_tokens += total_tokens
 
             # --- Fire-and-forget (Anti-Pattern 3: never block the graph) ---
