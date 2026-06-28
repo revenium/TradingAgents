@@ -1,11 +1,12 @@
 """Run-scoped context variable machinery for Revenium tracing.
 
-Exposes three module-level ContextVars that carry identity across every
+Exposes four module-level ContextVars that carry identity across every
 agent node for the duration of a single propagate() call:
 
-  - current_trace_id:   unique UUID per run, links every agent LLM call
-  - current_agent_name: the LangGraph node name set at each agent's entry
-  - current_run_meta:   {ticker, trade_date, ...} from the propagate() call
+  - current_trace_id:                unique UUID per run, links every agent LLM call
+  - current_agent_name:              the LangGraph node name set at each agent's entry
+  - current_run_meta:                {ticker, trade_date, ...} from the propagate() call
+  - current_parent_transaction_id:   transaction_id of the most recently completed LLM call
 
 Design rationale:
 - contextvars are chosen over global state because propagate() runs
@@ -62,6 +63,12 @@ current_run_meta: contextvars.ContextVar[dict] = contextvars.ContextVar(
 )
 """Dict carrying {ticker, trade_date, ...extra} for the current propagate() run."""
 
+current_parent_transaction_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "revenium_parent_transaction_id",
+    default="",
+)
+"""transaction_id of the most recently completed LLM call; "" at run start."""
+
 
 # ---------------------------------------------------------------------------
 # Context manager
@@ -98,10 +105,12 @@ def revenium_run_context(
     token_meta = current_run_meta.set(
         {"ticker": ticker, "trade_date": str(trade_date), **meta}
     )
+    token_parent = current_parent_transaction_id.set("")
     logger.debug("revenium_run_context enter: ticker=%r trace_id=%r", ticker, trace_id)
     try:
         yield trace_id
     finally:
         current_trace_id.reset(token_trace)
         current_run_meta.reset(token_meta)
+        current_parent_transaction_id.reset(token_parent)
         logger.debug("revenium_run_context exit: trace_id=%r", trace_id)

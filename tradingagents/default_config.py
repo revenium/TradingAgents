@@ -26,6 +26,7 @@ _ENV_OVERRIDES = {
     "REVENIUM_ORGANIZATION_NAME":   "revenium_organization_name",
     "REVENIUM_PRODUCT_NAME":        "revenium_product_name",
     "REVENIUM_SUBSCRIBER_ID":       "revenium_subscriber_id",
+    "REVENIUM_TRACE_TYPE":          "revenium_trace_type",
 }
 
 
@@ -174,4 +175,5 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "neutral_debator":       "risk_debate",
         "portfolio_manager":     "decision",
     },
+    "revenium_trace_type":         os.getenv("REVENIUM_TRACE_TYPE", "trading-run"),
 })
