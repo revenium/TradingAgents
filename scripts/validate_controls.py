@@ -10,14 +10,23 @@ readiness (compiled rules, percentUsed, shadowMode).
   TIMING  Reports which agent triggered the halt and elapsed seconds to halt.
 
 Requirements:
-  - REVENIUM_METERING_API_KEY set to a valid rev_mk_* key
+  - REVENIUM_ENFORCEMENT_BASE_URL=https://api.revenium.ai/profitstream  (required:
+    without the /profitstream context path the SDK derives the bare metering origin
+    and the compiled-rules fetch returns 404 — the circuit breaker never arms)
+  - REVENIUM_METERING_API_KEY set to a key with enforcement-rule READ scope.
+    A rev_sk_ write key works for BOTH metering and enforcement reads.
+    A metering-only rev_mk_ key is rejected (403) by the enforcement feed —
+    the circuit breaker will never arm with a rev_mk_-only key.
   - REVENIUM_CIRCUIT_BREAKER_ENABLED=true
   - REVENIUM_TEAM_ID=DZxzEl
   - REVENIUM_CB_POLL_INTERVAL_SECONDS=5 (for reliable timing)
   - At least one LLM provider key
+  NOTE: the compiled-rules feed recompiles on a ~30s cadence; allow ~30-60s
+  pre-warm lead time after a rule is first breached before the gate sees it (D-08).
 
 Usage:
-    REVENIUM_METERING_API_KEY=rev_mk_... REVENIUM_CIRCUIT_BREAKER_ENABLED=true \\
+    REVENIUM_ENFORCEMENT_BASE_URL=https://api.revenium.ai/profitstream \\
+    REVENIUM_METERING_API_KEY=rev_sk_... REVENIUM_CIRCUIT_BREAKER_ENABLED=true \\
     REVENIUM_TEAM_ID=DZxzEl REVENIUM_CB_POLL_INTERVAL_SECONDS=5 \\
     OPENAI_API_KEY=... python scripts/validate_controls.py
 
