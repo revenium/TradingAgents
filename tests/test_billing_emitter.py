@@ -251,3 +251,53 @@ def test_emit_billing_event_fail_open_when_client_raises():
     )
     # No exception means pass; report_outcome was called and the error was swallowed.
     mock_client.report_outcome.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# (e) validate_billing.main() returns 0 and prints keyless-skip message
+#     when REVENIUM_BILLING_API_KEY is unset (DMO-04 CI safety check)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_validate_billing_keyless_exits_zero(monkeypatch, capsys):
+    """validate_billing.main() returns 0 and prints keyless-skip when billing key is absent."""
+    # Ensure billing key is absent in both the env and DEFAULT_CONFIG.
+    monkeypatch.delenv("REVENIUM_BILLING_API_KEY", raising=False)
+
+    import sys
+
+    # Insert the worktree root onto sys.path so the script's path-insert does nothing
+    # unexpected when executed in a test context.
+    import os
+    worktree_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if worktree_root not in sys.path:
+        sys.path.insert(0, worktree_root)
+
+    import importlib
+    import tradingagents.default_config as dc_mod
+
+    # Remove all _ENV_OVERRIDES so DEFAULT_CONFIG is rebuilt keyless.
+    for var in dc_mod._ENV_OVERRIDES:
+        monkeypatch.delenv(var, raising=False)
+    importlib.reload(dc_mod)
+
+    # Patch argparse to avoid consuming pytest argv.
+    with patch("argparse.ArgumentParser.parse_args", return_value=type(
+        "A", (), {"ticker": "NVDA", "date": "2026-06-27"}
+    )()):
+        # Import the script from the worktree scripts directory.
+        import importlib.util
+
+        script_path = os.path.join(worktree_root, "scripts", "validate_billing.py")
+        spec = importlib.util.spec_from_file_location("validate_billing", script_path)
+        assert spec is not None
+        validate_billing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validate_billing)  # type: ignore[union-attr]
+
+        ret = validate_billing.main()
+
+    captured = capsys.readouterr()
+    assert ret == 0, f"Expected exit 0 in keyless mode, got {ret}"
+    assert "keyless mode" in captured.out.lower(), (
+        f"Expected keyless-skip message in stdout, got:\n{captured.out}"
+    )
