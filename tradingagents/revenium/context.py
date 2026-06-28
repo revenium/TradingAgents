@@ -22,6 +22,20 @@ Design rationale:
   an exception propagates, so state never bleeds between consecutive
   propagate() calls in a long-lived process.
 
+Parent-chain carrier (GAP-02-01, 02-03):
+- current_parent_transaction_id is RETAINED as a documented fallback for
+  non-graph callers (e.g., validate_metering.py which drives the handler
+  directly without going through TradingAgentsGraph).
+- For graph callers, the primary parent-chain carrier is now
+  ReveniumCallbackHandler._last_transaction_id (handler-instance state).
+  LangGraph executes every node inside its own copy_context().run(), so
+  current_parent_transaction_id.set() in one node's on_llm_end is invisible
+  to the next node's on_chat_model_start — the contextvar cannot carry the
+  chain cross-node.  See callback.py module docstring for details.
+- current_trace_id and current_run_meta remain the fallback source for
+  on_llm_end when handler-instance state (_run_trace_id, _run_meta) is None
+  (e.g., when the handler is called outside a begin_run/end_run lifecycle).
+
 Key invariants:
 - current_agent_name defaults to "unknown" so a missing set() call does not
   crash the callback handler or produce UNCLASSIFIED attribution gaps (D-04).

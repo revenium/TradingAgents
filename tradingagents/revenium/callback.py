@@ -26,6 +26,28 @@ Design rationale:
   I/O before asserting call counts, without adding any real synchronisation
   overhead to production runs (daemon threads are collected after exit).
 
+Run-scoped trace state (GAP-02-01 fix, 02-03):
+- LangGraph executes every node inside its own ``copy_context().run()``, so any
+  contextvar write in node A's ``on_llm_end`` is invisible to node B's
+  ``on_chat_model_start``.  The Phase 2 research premise that the synchronous
+  main thread keeps the parent-id contextvar visible across nodes is FALSE.
+- ``begin_run(trace_id, ticker, trade_date)`` / ``end_run()`` store run-scoped
+  state on the handler instance (``_run_trace_id``, ``_run_meta``,
+  ``_last_transaction_id``) rather than per-node contextvars.  The handler
+  instance is shared across all nodes, so instance-state writes survive the
+  copy_context() boundary.
+- Parent chain: ``on_chat_model_start`` reads ``self._last_transaction_id`` (under
+  lock) instead of ``current_parent_transaction_id.get()``.  ``on_llm_end``
+  advances ``self._last_transaction_id`` to this call's ``transaction_id`` (under
+  lock) and no longer calls ``current_parent_transaction_id.set()``.
+- Linearisation tradeoff: ``_last_transaction_id`` serialises the parent chain
+  across parallel analyst fan-out into a single sequential dependency view.  This
+  is acceptable per 02-VERIFICATION.md and still yields the bull→bear→bull
+  repetition pattern needed for TRC-03 circular detection.
+- Contextvar fallback: ``current_trace_id`` / ``current_run_meta`` are still read
+  in ``on_llm_end`` when the handler-instance values are ``None``, so direct
+  non-graph callers (``validate_metering.py`` path) continue to work unchanged.
+
 Key invariants:
 - ``enabled`` is ``False`` when ``api_key`` is absent (D-05): every public
   method is a no-op and never raises.
@@ -52,7 +74,6 @@ from tradingagents.revenium.client import ReveniumClient
 from tradingagents.revenium.config import attribution_from_config, task_type_for_node
 from tradingagents.revenium.context import (
     current_agent_name,
-    current_parent_transaction_id,
     current_run_meta,
     current_trace_id,
 )
@@ -134,6 +155,23 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
         self._call_state: dict[str, dict] = {}
         self._lock = threading.Lock()
 
+        # Run-scoped handler-instance trace state (GAP-02-01, 02-03).
+        # These fields are set by begin_run() / cleared by end_run() and survive
+        # LangGraph's per-node copy_context().run() isolation because they live
+        # on the shared handler instance rather than per-node contextvars.
+        #
+        # _last_transaction_id: transaction_id of the most recently completed
+        #   LLM call in this run.  Read by on_chat_model_start as parent_tid
+        #   and advanced by on_llm_end.  Replaces current_parent_transaction_id
+        #   as the primary parent-chain carrier for graph callers.
+        # _run_trace_id: trace_id UUID for the current propagate() call.
+        #   Set by begin_run(), read by on_llm_end, cleared by end_run().
+        # _run_meta: {ticker, trade_date} for the current run.
+        #   Set by begin_run(), read by on_llm_end, cleared by end_run().
+        self._last_transaction_id: str = ""
+        self._run_trace_id: str | None = None
+        self._run_meta: dict | None = None
+
         # Background thread tracking — join in tests before asserting counts.
         self._threads: list[threading.Thread] = []
 
@@ -176,6 +214,70 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
         return self._client.enabled
 
     # ------------------------------------------------------------------
+    # Run lifecycle (GAP-02-01 fix)
+    # ------------------------------------------------------------------
+
+    def begin_run(self, trace_id: str, ticker: str, trade_date: str) -> None:
+        """Open a new propagate() run on this handler instance.
+
+        Stores the run-scoped trace_id, ticker/date metadata, and resets the
+        parent-chain cursor (_last_transaction_id) to "" so the first span of
+        the new run has no parent.
+
+        Called from ``trading_graph._run_graph`` immediately after entering the
+        ``revenium_run_context`` block, before ``graph.invoke()``.
+
+        Fail-open: any exception is caught and logged; the trading run is never
+        blocked.  No-op when the handler is disabled.
+
+        Args:
+            trace_id:   The UUID trace identifier for this run (from revenium_run_context).
+            ticker:     Ticker symbol being analysed (e.g. "NVDA").
+            trade_date: ISO date string for the analysis date (e.g. "2026-06-27").
+        """
+        if not self.enabled:
+            return
+        try:
+            with self._lock:
+                self._run_trace_id = trace_id
+                self._run_meta = {"ticker": ticker, "trade_date": str(trade_date)}
+                self._last_transaction_id = ""
+            logger.debug(
+                "ReveniumCallbackHandler.begin_run: trace_id=%r ticker=%r",
+                trace_id,
+                ticker,
+            )
+        except Exception:  # noqa: BLE001 — fail open, never block the run
+            logger.warning(
+                "ReveniumCallbackHandler.begin_run failed — continuing without trace context",
+                exc_info=True,
+            )
+
+    def end_run(self) -> None:
+        """Close the current propagate() run on this handler instance.
+
+        Clears run-scoped trace state so it does not bleed into the next run.
+        Called from ``trading_graph._run_graph`` in a ``finally`` block so it
+        runs even when ``graph.invoke()`` raises.
+
+        Fail-open: any exception is caught and logged; the trading run is never
+        blocked.  No-op when the handler is disabled.
+        """
+        if not self.enabled:
+            return
+        try:
+            with self._lock:
+                self._run_trace_id = None
+                self._run_meta = None
+                self._last_transaction_id = ""
+            logger.debug("ReveniumCallbackHandler.end_run: run-scoped state cleared")
+        except Exception:  # noqa: BLE001 — fail open, never block the run
+            logger.warning(
+                "ReveniumCallbackHandler.end_run failed — run-scoped state may not be cleared",
+                exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
     # LangChain callbacks
     # ------------------------------------------------------------------
 
@@ -204,12 +306,18 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             agent = current_agent_name.get()  # "unknown" if no agent set this
 
             with self._lock:
+                # Read the parent-chain cursor from handler-instance state
+                # (GAP-02-01: current_parent_transaction_id contextvar is NOT
+                # used here — LangGraph's per-node copy_context().run() means
+                # any .set() from the previous node's on_llm_end is invisible
+                # in this node's context copy.  self._last_transaction_id lives
+                # on the shared handler instance and is always visible.)
                 self._call_state[run_id] = {
                     "start_time": datetime.now(timezone.utc),
                     "model": model,
                     "provider": provider,
                     "agent": agent,
-                    "parent_tid": current_parent_transaction_id.get(),
+                    "parent_tid": self._last_transaction_id,
                 }
         except Exception:  # noqa: BLE001 — fail open, never block the run
             logger.warning(
@@ -266,10 +374,14 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             )
             total_tokens: int = input_tokens + output_tokens
 
-            # --- Context fields ---
-            trace_id: str = current_trace_id.get()
+            # --- Context fields (GAP-02-01: prefer handler-instance state; ---
+            # --- fall back to contextvars for direct non-graph callers)    ---
+            with self._lock:
+                run_trace_id = self._run_trace_id
+                run_meta_inst = self._run_meta
+            trace_id: str = run_trace_id if run_trace_id is not None else current_trace_id.get()
             task_type: str = self._task_type_map.get(agent, "analysis")
-            run_meta: dict = current_run_meta.get()
+            run_meta: dict = run_meta_inst if run_meta_inst is not None else current_run_meta.get()
             ticker: str = run_meta.get("ticker", "")
             trade_date_str: str = run_meta.get("trade_date", "")
             trace_name: str = f"{ticker}-{trade_date_str}"[:200] if ticker else ""
@@ -348,10 +460,17 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                         exc_info=True,
                     )
 
-            # Update parent chain synchronously on the main thread BEFORE the
-            # background thread starts — contextvar writes inside a thread are
-            # invisible to the main thread context (PATTERNS.md Pitfall 1).
-            current_parent_transaction_id.set(transaction_id)
+            # Advance the parent-chain cursor on the shared handler instance
+            # (GAP-02-01 fix).  Must happen synchronously before the background
+            # thread starts so the next on_chat_model_start — in this same node
+            # or the next node — reads the updated value under the lock.
+            # Note: current_parent_transaction_id.set() is intentionally removed
+            # here; it had no effect across nodes (copy_context() boundary) and
+            # is replaced by self._last_transaction_id as the primary chain carrier.
+            # The contextvar remains defined in context.py as the fallback path
+            # for direct non-graph callers (see context.py module docstring).
+            with self._lock:
+                self._last_transaction_id = transaction_id
 
             t = threading.Thread(
                 target=_meter_safe,

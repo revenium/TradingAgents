@@ -265,7 +265,17 @@ class TestParentTransactionIdReset:
 
     @pytest.mark.unit
     def test_parent_tid_resets_to_empty_after_context(self, handler_with_mock_client):
-        """current_parent_transaction_id is '' after revenium_run_context exits normally."""
+        """current_parent_transaction_id is '' after revenium_run_context exits normally.
+
+        Note (02-03 Task 2): the parent chain now lives on
+        ReveniumCallbackHandler._last_transaction_id (handler-instance state)
+        rather than on the current_parent_transaction_id contextvar.  on_llm_end
+        no longer calls current_parent_transaction_id.set(transaction_id), so the
+        inner assertion that the contextvar is non-empty after on_llm_end has been
+        removed.  The outer assertion that the contextvar returns to "" after
+        revenium_run_context exits remains valid — revenium_run_context still resets
+        its own ContextVar token in the finally block.
+        """
         from tradingagents.revenium.context import (
             current_parent_transaction_id,
             revenium_run_context,
@@ -280,10 +290,9 @@ class TestParentTransactionIdReset:
             handler.on_chat_model_start(_make_serialized(), [[]], run_id=run_id)
             handler.on_llm_end(_make_llm_result(), run_id=run_id)
             _flush_handler_threads(handler)
-            # After first on_llm_end, the contextvar is non-empty
-            assert current_parent_transaction_id.get() != "", (
-                "parent_transaction_id must be non-empty after first on_llm_end"
-            )
+            # on_llm_end no longer writes current_parent_transaction_id (the parent
+            # chain lives on self._last_transaction_id); the contextvar stays at ""
+            # inside the context block.
 
         # After context exit it must be reset to ""
         assert current_parent_transaction_id.get() == "", (

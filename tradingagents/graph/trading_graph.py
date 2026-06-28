@@ -393,60 +393,83 @@ class TradingAgentsGraph:
             ticker=company_name,
             trade_date=str(trade_date),
         ) as _trace_id:
-            # Initialize state — inject memory log context for PM and the
-            # deterministically resolved instrument identity for all agents.
-            past_context = self.memory_log.get_past_context(company_name)
-            instrument_context = self.resolve_instrument_context(company_name, asset_type)
-            init_agent_state = self.propagator.create_initial_state(
+            # Open the handler-instance run lifecycle so trace_id and the
+            # parent chain (_last_transaction_id) survive LangGraph's per-node
+            # copy_context().run() isolation (GAP-02-01 fix).
+            # begin_run stores _run_trace_id / _run_meta / resets _last_transaction_id.
+            # end_run runs in a finally so state never leaks across runs.
+            # Both are fail-open and no-ops when the handler is disabled.
+            #
+            # Linearisation note: _last_transaction_id serialises the parent
+            # chain across parallel analyst fan-out into a single sequential
+            # dependency view (acceptable per 02-VERIFICATION.md) and still
+            # yields the bull→bear→bull repetition needed for TRC-03 circular
+            # detection.
+            self._revenium_handler.begin_run(
+                _trace_id,
                 company_name,
-                trade_date,
-                asset_type=asset_type,
-                past_context=past_context,
-                instrument_context=instrument_context,
+                str(trade_date),
             )
-            args = self.propagator.get_graph_args()
+            try:
+                # Initialize state — inject memory log context for PM and the
+                # deterministically resolved instrument identity for all agents.
+                past_context = self.memory_log.get_past_context(company_name)
+                instrument_context = self.resolve_instrument_context(company_name, asset_type)
+                init_agent_state = self.propagator.create_initial_state(
+                    company_name,
+                    trade_date,
+                    asset_type=asset_type,
+                    past_context=past_context,
+                    instrument_context=instrument_context,
+                )
+                args = self.propagator.get_graph_args()
 
-            # Inject thread_id so same ticker+date resumes, different date starts fresh.
-            if self.config.get("checkpoint_enabled"):
-                tid = thread_id(company_name, str(trade_date))
-                args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
+                # Inject thread_id so same ticker+date resumes, different date starts fresh.
+                if self.config.get("checkpoint_enabled"):
+                    tid = thread_id(company_name, str(trade_date))
+                    args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
-            if self.debug:
-                trace = []
-                for chunk in self.graph.stream(init_agent_state, **args):
-                    if len(chunk["messages"]) == 0:
-                        pass
-                    else:
-                        chunk["messages"][-1].pretty_print()
-                        trace.append(chunk)
-                # Streamed chunks are per-node deltas. Merge them so the returned
-                # state matches what graph.invoke() yields in the non-debug path.
-                final_state = {}
-                for chunk in trace:
-                    final_state.update(chunk)
-            else:
-                final_state = self.graph.invoke(init_agent_state, **args)
+                if self.debug:
+                    trace = []
+                    for chunk in self.graph.stream(init_agent_state, **args):
+                        if len(chunk["messages"]) == 0:
+                            pass
+                        else:
+                            chunk["messages"][-1].pretty_print()
+                            trace.append(chunk)
+                    # Streamed chunks are per-node deltas. Merge them so the returned
+                    # state matches what graph.invoke() yields in the non-debug path.
+                    final_state = {}
+                    for chunk in trace:
+                        final_state.update(chunk)
+                else:
+                    final_state = self.graph.invoke(init_agent_state, **args)
 
-            # Store current state for reflection.
-            self.curr_state = final_state
+                # Store current state for reflection.
+                self.curr_state = final_state
 
-            # Log state to disk.
-            self._log_state(trade_date, final_state)
+                # Log state to disk.
+                self._log_state(trade_date, final_state)
 
-            # Store decision for deferred reflection on the next same-ticker run.
-            self.memory_log.store_decision(
-                ticker=company_name,
-                trade_date=trade_date,
-                final_trade_decision=final_state["final_trade_decision"],
-            )
-
-            # Clear checkpoint on successful completion to avoid stale state.
-            if self.config.get("checkpoint_enabled"):
-                clear_checkpoint(
-                    self.config["data_cache_dir"], company_name, str(trade_date)
+                # Store decision for deferred reflection on the next same-ticker run.
+                self.memory_log.store_decision(
+                    ticker=company_name,
+                    trade_date=trade_date,
+                    final_trade_decision=final_state["final_trade_decision"],
                 )
 
-            return final_state, self.process_signal(final_state["final_trade_decision"])
+                # Clear checkpoint on successful completion to avoid stale state.
+                if self.config.get("checkpoint_enabled"):
+                    clear_checkpoint(
+                        self.config["data_cache_dir"], company_name, str(trade_date)
+                    )
+
+                return final_state, self.process_signal(final_state["final_trade_decision"])
+            finally:
+                # Clear run-scoped handler state unconditionally (even if
+                # graph.invoke raises) so trace context never bleeds into the
+                # next propagate() call.  end_run() is fail-open and never raises.
+                self._revenium_handler.end_run()
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
