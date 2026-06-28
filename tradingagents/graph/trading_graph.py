@@ -9,6 +9,7 @@ from typing import Any
 
 import yfinance as yf
 from langgraph.prebuilt import ToolNode
+from revenium_middleware._core import stop_polling
 
 # Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -32,7 +33,6 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
-
 from tradingagents.revenium.callback import ReveniumCallbackHandler
 from tradingagents.revenium.context import revenium_run_context
 
@@ -472,6 +472,11 @@ class TradingAgentsGraph:
                 # graph.invoke raises) so trace context never bleeds into the
                 # next propagate() call.  end_run() is fail-open and never raises.
                 self._revenium_handler.end_run()
+                # Stop the background enforcement poller so it does not outlive
+                # this run (propagate() path). _ensure_poller_running() restarts
+                # it on the next propagate() call's first check_enforcement().
+                # Order matters: state clear (end_run) first, then teardown (stop_polling).
+                stop_polling()
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
