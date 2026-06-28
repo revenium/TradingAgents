@@ -10,8 +10,9 @@ Key invariants validated:
   no-ops (no thread spawned, no exception raised).
 - Emitter with a fake key and a mocked AgenticOutcomeClient calls
   ``create_job`` with ``agentic_job_id == trace_id`` and ``report_outcome``
-  with a payload whose ``outcomeValue`` equals the configured price and
-  ``result == "SUCCESS"``.
+  with a payload whose ``outcomeValue`` equals the configured price,
+  ``executionStatus == "SUCCESS"`` (not ``result``), and ``metadata`` is a
+  JSON string that round-trips to a dict with ``ticker`` and ``trade_date``.
 - When the mock client raises, both public methods still return ``None`` and
   do not propagate the exception.
 """
@@ -19,12 +20,12 @@ Key invariants validated:
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helper: build an emitter with an injected mock client
@@ -66,7 +67,7 @@ def _make_emitter_with_mock_client(
 
 def _collect_threads_for(emitter: Any, fn, *args, **kwargs) -> None:
     """Call ``fn(*args, **kwargs)`` and join all daemon threads spawned by it."""
-    before = set(t.name for t in threading.enumerate())
+    before = {t.name for t in threading.enumerate()}
     fn(*args, **kwargs)
     after = threading.enumerate()
     # Join any threads whose names start with "rev-billing-" spawned by fn
@@ -121,13 +122,13 @@ def test_emitter_disabled_when_no_api_key():
     emitter = TradingSignalBillingEmitter(api_key="")
     assert emitter.enabled is False
 
-    threads_before = set(t.ident for t in threading.enumerate())
+    threads_before = {t.ident for t in threading.enumerate()}
 
     # Both methods must return None without spawning any threads or raising.
     result_create = emitter.create_trading_signal_job("trace-abc", "NVDA", "2026-06-28")
     result_emit = emitter.emit_billing_event("trace-abc", 2.00)
 
-    threads_after = set(t.ident for t in threading.enumerate())
+    threads_after = {t.ident for t in threading.enumerate()}
 
     assert result_create is None
     assert result_emit is None
@@ -204,13 +205,19 @@ def test_emit_billing_event_payload_shape():
 
     assert called_trace_id == trace_id
     assert payload["outcomeValue"] == signal_price
-    assert payload["result"] == "SUCCESS"
+    assert payload["executionStatus"] == "SUCCESS"
+    assert payload["executionStatus"] in {"SUCCESS", "FAILED", "CANCELLED"}
+    assert "result" not in payload
     assert payload["outcomeType"] == "CONVERTED"
     assert payload["outcomeCurrency"] == "USD"
     assert payload["reportedBy"] == "test@example.com"
-    # Metadata should include ticker and trade_date from create_trading_signal_job
-    assert payload["metadata"]["ticker"] == "NVDA"
-    assert payload["metadata"]["trade_date"] == "2026-06-28"
+    # Metadata must be a JSON string that round-trips to a dict with ticker/trade_date.
+    assert isinstance(payload["metadata"], str), (
+        f"metadata must be a JSON string, got {type(payload['metadata'])}"
+    )
+    meta = json.loads(payload["metadata"])
+    assert meta["ticker"] == "NVDA"
+    assert meta["trade_date"] == "2026-06-28"
 
 
 # ---------------------------------------------------------------------------
@@ -264,16 +271,16 @@ def test_validate_billing_keyless_exits_zero(monkeypatch, capsys):
     # Ensure billing key is absent in both the env and DEFAULT_CONFIG.
     monkeypatch.delenv("REVENIUM_BILLING_API_KEY", raising=False)
 
-    import sys
-
     # Insert the worktree root onto sys.path so the script's path-insert does nothing
     # unexpected when executed in a test context.
     import os
+    import sys
     worktree_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if worktree_root not in sys.path:
         sys.path.insert(0, worktree_root)
 
     import importlib
+
     import tradingagents.default_config as dc_mod
 
     # Remove all _ENV_OVERRIDES so DEFAULT_CONFIG is rebuilt keyless.
