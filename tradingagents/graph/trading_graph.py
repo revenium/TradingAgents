@@ -33,6 +33,7 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
+from tradingagents.revenium.billing import TradingSignalBillingEmitter
 from tradingagents.revenium.callback import ReveniumCallbackHandler
 from tradingagents.revenium.context import revenium_run_context
 
@@ -81,6 +82,11 @@ class TradingAgentsGraph:
             self.callbacks = list(callbacks or []) + [_rev_handler]
         else:
             self.callbacks = list(callbacks or [])
+
+        # Billing emitter for the monetize slice (BIL-01/02, D-07 to D-10).
+        # Silent no-op when revenium_billing_api_key is absent (DMO-04 keyless).
+        # Mirrors the _rev_handler instantiation pattern above.
+        self._billing_emitter = TradingSignalBillingEmitter.from_config(self.config)
 
         # Update the interface's config
         set_config(self.config)
@@ -413,6 +419,16 @@ class TradingAgentsGraph:
                     company_name,
                     str(trade_date),
                 )
+                # Open the Revenium Job record for this run so revenue is correlated
+                # to AI cost via trace_id in the Costs & Revenue dashboard (BIL-02/D-08).
+                # Placed after begin_run so job trace_id aligns with the metering trace;
+                # placed before graph.invoke so the job exists before any outcome is
+                # reported.  Fail-open — never raises; no-op when billing key absent.
+                self._billing_emitter.create_trading_signal_job(
+                    trace_id=_trace_id,
+                    ticker=company_name,
+                    trade_date=str(trade_date),
+                )
                 # Initialize state — inject memory log context for PM and the
                 # deterministically resolved instrument identity for all agents.
                 past_context = self.memory_log.get_past_context(company_name)
@@ -446,6 +462,23 @@ class TradingAgentsGraph:
                         final_state.update(chunk)
                 else:
                     final_state = self.graph.invoke(init_agent_state, **args)
+
+                # Emit one priced billing event for this completed signal (D-09/BIL-01).
+                # Placement is critical: inside the try block, AFTER both debug and
+                # non-debug final_state paths (graph fully delivered a PM decision),
+                # BEFORE self.curr_state assignment or return.
+                #
+                # D-10 guarantee: BudgetExceededError raised inside graph.invoke() /
+                # graph.stream() propagates before reaching this line, so
+                # circuit-breaker-halted runs never emit a billing event — no
+                # conditional guard needed.
+                #
+                # Fail-open: emit_billing_event dispatches on a daemon thread and never
+                # raises; end_run / stop_polling in the finally block are unaffected.
+                self._billing_emitter.emit_billing_event(
+                    trace_id=_trace_id,
+                    signal_price=self.config.get("revenium_signal_price", 2.00),
+                )
 
                 # Store current state for reflection.
                 self.curr_state = final_state
