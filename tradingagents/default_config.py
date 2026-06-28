@@ -27,6 +27,10 @@ _ENV_OVERRIDES = {
     "REVENIUM_PRODUCT_NAME":        "revenium_product_name",
     "REVENIUM_SUBSCRIBER_ID":       "revenium_subscriber_id",
     "REVENIUM_TRACE_TYPE":          "revenium_trace_type",
+    # Revenium billing / monetize pillar (Phase 4, D-07, BIL-01)
+    "TRADINGAGENTS_SIGNAL_PRICE":       "revenium_signal_price",
+    "REVENIUM_BILLING_API_KEY":         "revenium_billing_api_key",
+    "REVENIUM_PROFITSTREAM_BASE_URL":   "revenium_profitstream_url",
 }
 
 
@@ -176,4 +180,16 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "portfolio_manager":     "decision",
     },
     "revenium_trace_type":         os.getenv("REVENIUM_TRACE_TYPE", "trading-run"),
+    # Billing / monetize pillar (Phase 4, BIL-01, D-07)
+    # revenium_signal_price MUST be a float literal (not a string) so that
+    # _coerce's isinstance(reference, float) branch fires correctly when
+    # TRADINGAGENTS_SIGNAL_PRICE is set via env (Pitfall 5).
+    "revenium_signal_price":        2.00,
+    # rev_sk_* write-scope key (NOT rev_mk_*; metering-only keys are 403 on jobs writes).
+    # When empty the billing emitter is a silent no-op (DMO-04).
+    "revenium_billing_api_key":     os.getenv("REVENIUM_BILLING_API_KEY", ""),
+    # Jobs/Outcomes profitstream host. The AgenticOutcomeClient default is api.revenium.io;
+    # set REVENIUM_PROFITSTREAM_BASE_URL to api.prod.ai.hcapp.io/profitstream/v2/api
+    # if validate_billing.py shows the default host 404s (Open Question 1).
+    "revenium_profitstream_url":    os.getenv("REVENIUM_PROFITSTREAM_BASE_URL", "https://api.revenium.io"),
 })
