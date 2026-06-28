@@ -69,6 +69,7 @@ from typing import Any
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import LLMResult
+from revenium_middleware._core import BudgetExceededError, check_enforcement  # noqa: F401
 
 from tradingagents.revenium.client import ReveniumClient
 from tradingagents.revenium.config import attribution_from_config, task_type_for_node
@@ -297,11 +298,26 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
         """Capture provider, model, agent name, and start time for this call.
 
         Keyed by ``run_id`` so interleaved calls (future concurrency) don't
-        cross-contaminate.  This method must never raise — it is in the hot
-        path of every LLM call.
+        cross-contaminate.
+
+        Enforcement gate (CTL-01): ``check_enforcement()`` is called BEFORE the
+        fail-open ``try/except`` so ``BudgetExceededError`` is deliberately
+        allowed to propagate (D-03 exception to the fail-open convention).  This
+        is the ONE method that can raise when a cost rule is breached.
         """
         if not self.enabled:
             return
+
+        # Enforcement gate — D-03: deliberate exception to the fail-open
+        # convention.  BudgetExceededError must NOT be caught below; it must
+        # propagate to _run_graph / CLI so the run halts cleanly (CTL-01/02).
+        # No-op when REVENIUM_CIRCUIT_BREAKER_ENABLED is unset or
+        # REVENIUM_BYPASS=true (keeps keyless test suite green — DMO-04).
+        # subscriber_credential is a PII email — never logged here (T-03-02).
+        check_enforcement({
+            "subscriber_credential": self._attribution.get("subscriber_id", ""),
+        })
+
         try:
             run_id = str(kwargs.get("run_id", uuid.uuid4()))
             model = (
