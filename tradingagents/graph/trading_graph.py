@@ -405,12 +405,14 @@ class TradingAgentsGraph:
             # dependency view (acceptable per 02-VERIFICATION.md) and still
             # yields the bull→bear→bull repetition needed for TRC-03 circular
             # detection.
-            self._revenium_handler.begin_run(
-                _trace_id,
-                company_name,
-                str(trade_date),
-            )
             try:
+                # begin_run is inside the try so the finally/end_run below always
+                # pairs with it — even if begin_run itself raises (WR-03).
+                self._revenium_handler.begin_run(
+                    _trace_id,
+                    company_name,
+                    str(trade_date),
+                )
                 # Initialize state — inject memory log context for PM and the
                 # deterministically resolved instrument identity for all agents.
                 past_context = self.memory_log.get_past_context(company_name)

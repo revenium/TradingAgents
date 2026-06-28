@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def _run_checks(checks: list[tuple[str, bool]]) -> tuple[int, int]:
@@ -121,7 +121,7 @@ def main() -> int:
     ticker: str = args.ticker
     trade_date: str = args.date
 
-    print(f"\nValidating Revenium tracing — {datetime.utcnow().isoformat()}Z")
+    print(f"\nValidating Revenium tracing — {datetime.now(timezone.utc).isoformat()}")
     print(f"  Ticker              : {ticker}")
     print(f"  Trade date          : {trade_date}")
     print(f"  max_debate_rounds   : {config['max_debate_rounds']}")

@@ -270,6 +270,13 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                 self._run_trace_id = None
                 self._run_meta = None
                 self._last_transaction_id = ""
+                # Drop any per-call state left over from a malformed/aborted run
+                # so it does not bleed into the next propagate() call (WR-01).
+                self._call_state.clear()
+                # Prune finished daemon threads so the list does not grow
+                # unbounded across reused-handler runs (CLI backtest / multi-ticker
+                # scans); keeps the test-side join loop bounded to live threads (WR-02).
+                self._threads = [t for t in self._threads if t.is_alive()]
             logger.debug("ReveniumCallbackHandler.end_run: run-scoped state cleared")
         except Exception:  # noqa: BLE001 — fail open, never block the run
             logger.warning(
@@ -343,6 +350,12 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             run_id = str(kwargs.get("run_id", ""))
             end_time = datetime.now(timezone.utc)
 
+            # --- Retrieve per-call state ---
+            # Pop before the generation extraction so a malformed LLMResult that
+            # early-returns below does not orphan this entry in _call_state (WR-01).
+            with self._lock:
+                call_state = self._call_state.pop(run_id, {})
+
             # --- Token extraction (stats_handler pattern) ---
             try:
                 generation = response.generations[0][0]
@@ -354,10 +367,6 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                 message = generation.message
                 if isinstance(message, AIMessage) and hasattr(message, "usage_metadata"):
                     usage_metadata = message.usage_metadata
-
-            # --- Retrieve per-call state ---
-            with self._lock:
-                call_state = self._call_state.pop(run_id, {})
 
             start_time: datetime = call_state.get("start_time", end_time)
             model: str = call_state.get("model", "unknown")
