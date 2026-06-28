@@ -50,7 +50,12 @@ from langchain_core.outputs import LLMResult
 
 from tradingagents.revenium.client import ReveniumClient
 from tradingagents.revenium.config import attribution_from_config, task_type_for_node
-from tradingagents.revenium.context import current_agent_name, current_trace_id
+from tradingagents.revenium.context import (
+    current_agent_name,
+    current_parent_transaction_id,
+    current_run_meta,
+    current_trace_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +109,7 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
         client: ReveniumClient,
         attribution: dict,
         task_type_map: dict[str, str],
+        trace_type: str = "trading-run",
     ) -> None:
         """Construct the handler with a pre-built client and attribution fields.
 
@@ -115,11 +121,14 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             attribution:   Dict from ``attribution_from_config()`` carrying
                            ``organizationName``, ``productName``, ``subscriber_id``.
             task_type_map: ``{node_name -> task_type}`` mapping from config.
+            trace_type:    Outbound label for the Revenium trace_type field
+                           (e.g. "trading-run").  Defaults to "trading-run".
         """
         super().__init__()
         self._client = client
         self._attribution = attribution
         self._task_type_map = task_type_map
+        self._trace_type: str = trace_type
 
         # Per-call state keyed by run_id (captured at on_chat_model_start).
         self._call_state: dict[str, dict] = {}
@@ -154,7 +163,8 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
         attr = attribution_from_config(config)
         client = ReveniumClient(api_key=attr["api_key"], api_url=attr["api_url"])
         task_type_map: dict[str, str] = config.get("revenium_task_type_map", {})
-        return cls(client=client, attribution=attr, task_type_map=task_type_map)
+        trace_type: str = config.get("revenium_trace_type", "trading-run")
+        return cls(client=client, attribution=attr, task_type_map=task_type_map, trace_type=trace_type)
 
     # ------------------------------------------------------------------
     # Public properties
@@ -199,6 +209,7 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                     "model": model,
                     "provider": provider,
                     "agent": agent,
+                    "parent_tid": current_parent_transaction_id.get(),
                 }
         except Exception:  # noqa: BLE001 — fail open, never block the run
             logger.warning(
@@ -244,6 +255,7 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             model: str = call_state.get("model", "unknown")
             provider: str = call_state.get("provider", "unknown")
             agent: str = call_state.get("agent", current_agent_name.get())
+            parent_tid: str = call_state.get("parent_tid", "")
 
             # --- Token counts ---
             input_tokens: int = (
@@ -257,6 +269,10 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             # --- Context fields ---
             trace_id: str = current_trace_id.get()
             task_type: str = self._task_type_map.get(agent, "analysis")
+            run_meta: dict = current_run_meta.get()
+            ticker: str = run_meta.get("ticker", "")
+            trade_date_str: str = run_meta.get("trade_date", "")
+            trace_name: str = f"{ticker}-{trade_date_str}"[:200] if ticker else ""
 
             # --- Timing ---
             delta_ms: int = max(
@@ -267,6 +283,7 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
 
             # --- Build Revenium payload ---
             subscriber_id: str = self._attribution.get("subscriber_id", "")
+            transaction_id: str = str(uuid.uuid4())
             payload: dict[str, Any] = {
                 # Required fields
                 "completion_start_time": request_time,
@@ -281,7 +298,8 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                 "response_time": response_time,
                 "stop_reason": "END",
                 "total_token_count": total_tokens,
-                "transaction_id": str(uuid.uuid4()),
+                "transaction_id": transaction_id,
+                "transaction_name": agent,
                 # Attribution (MTR-02) — never empty (D-04 anti-UNCLASSIFIED)
                 "organization_name": self._attribution.get("organizationName", ""),
                 "product_name": self._attribution.get("productName", ""),
@@ -299,6 +317,12 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             # Only include trace_id when it is non-empty (avoid sending blank UUIDs)
             if trace_id:
                 payload["trace_id"] = trace_id
+            if parent_tid:
+                payload["parent_transaction_id"] = parent_tid
+            if trace_name:
+                payload["trace_name"] = trace_name
+            if self._trace_type:
+                payload["trace_type"] = self._trace_type
 
             # --- Update cost accumulators (Phase 4 CLI panel) ---
             with self._lock:
@@ -323,6 +347,11 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
                         _agent,
                         exc_info=True,
                     )
+
+            # Update parent chain synchronously on the main thread BEFORE the
+            # background thread starts — contextvar writes inside a thread are
+            # invisible to the main thread context (PATTERNS.md Pitfall 1).
+            current_parent_transaction_id.set(transaction_id)
 
             t = threading.Thread(
                 target=_meter_safe,
