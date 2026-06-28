@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import uuid
@@ -161,12 +162,12 @@ def main() -> int:
             client.report_outcome(
                 trace_id,
                 {
-                    "result": "SUCCESS",
+                    "executionStatus": "SUCCESS",
                     "outcomeType": "CONVERTED",
                     "outcomeValue": signal_price,
                     "outcomeCurrency": "USD",
                     "reportedBy": subscriber_id,
-                    "metadata": {"ticker": ticker, "trade_date": trade_date},
+                    "metadata": json.dumps({"ticker": ticker, "trade_date": trade_date}),
                 },
             )
             outcome_ok = True

@@ -28,6 +28,7 @@ Key invariants:
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Any
@@ -238,12 +239,12 @@ class TradingSignalBillingEmitter:
             try:
                 assert self._client is not None  # narrowing; already checked by enabled
                 payload: dict[str, Any] = {
-                    "result": "SUCCESS",
+                    "executionStatus": "SUCCESS",
                     "outcomeType": "CONVERTED",
                     "outcomeValue": signal_price,
                     "outcomeCurrency": "USD",
                     "reportedBy": attributed_to,
-                    "metadata": meta,
+                    "metadata": json.dumps(meta),
                 }
                 self._client.report_outcome(trace_id, payload)
                 logger.debug(
