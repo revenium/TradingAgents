@@ -58,6 +58,25 @@ app = typer.Typer(
 )
 
 
+# Maps raw agent_costs keys (current_agent_name contextvar values) to human-readable
+# labels shown in the live cost panel.  Kept as a module-level constant so both
+# _build_cost_panel and future validators can import it without instantiating the CLI.
+COST_PANEL_DISPLAY_NAMES: dict[str, str] = {
+    "market_analyst":       "Market Analyst",
+    "sentiment_analyst":    "Sentiment Analyst",
+    "news_analyst":         "News Analyst",
+    "fundamentals_analyst": "Fundamentals Analyst",
+    "bull_researcher":      "Bull Researcher",
+    "bear_researcher":      "Bear Researcher",
+    "research_manager":     "Research Manager",
+    "trader":               "Trader",
+    "aggressive_debator":   "Aggressive Analyst",
+    "conservative_debator": "Conservative Analyst",
+    "neutral_debator":      "Neutral Analyst",
+    "portfolio_manager":    "Portfolio Manager",
+}
+
+
 # Create a deque to store recent messages with a maximum length
 class MessageBuffer:
     # Fixed teams that always run (not user-selectable)
@@ -259,7 +278,7 @@ def create_layout():
         Layout(name="upper", ratio=3), Layout(name="analysis", ratio=5)
     )
     layout["upper"].split_row(
-        Layout(name="progress", ratio=2), Layout(name="messages", ratio=3)
+        Layout(name="progress", ratio=2), Layout(name="costs", ratio=2), Layout(name="messages", ratio=3)
     )
     return layout
 
@@ -271,7 +290,7 @@ def format_tokens(n):
     return str(n)
 
 
-def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
+def update_display(layout, spinner_text=None, stats_handler=None, start_time=None, *, revenium_handler=None):
     # Header with welcome message
     layout["header"].update(
         Panel(
@@ -360,6 +379,19 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["progress"].update(
         Panel(progress_table, title="Progress", border_style="cyan", padding=(1, 2))
     )
+
+    # AI Costs panel — live per-agent cost from the Revenium callback handler (D-01/D-04)
+    if revenium_handler is not None and revenium_handler.enabled:
+        layout["costs"].update(_build_cost_panel(revenium_handler))
+    else:
+        layout["costs"].update(
+            Panel(
+                "[dim]Revenium cost tracking not enabled[/dim]",
+                title="AI Costs",
+                border_style="dim",
+                padding=(1, 2),
+            )
+        )
 
     # Messages panel showing recent messages and tool calls
     messages_table = Table(
@@ -476,6 +508,104 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     stats_table.add_row(" | ".join(stats_parts))
 
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
+
+
+def _build_cost_panel(handler) -> Panel:
+    """Build the live AI Costs panel for the Rich layout (D-01, D-02, D-03, D-05/D-06).
+
+    Reads ``handler.agent_costs`` and returns a ``Panel`` suitable for
+    ``layout["costs"].update()``.  Always returns a valid Panel — never raises
+    (T-04-02 mitigation: runs inside the Live refresh loop).
+
+    Columns: Agent / Cost ($) / Tokens
+    - Agents sorted by cost descending (most expensive first).
+    - Debate-loop agents annotated `` ×N`` when call_count > 1 (D-05/D-06).
+    - Single-call agents shown without annotation (D-06).
+    - Max-cost agent row highlighted in bold yellow (D-03).
+    - Separator + bold Total row appended at the bottom.
+
+    Args:
+        handler: A ``ReveniumCallbackHandler`` instance whose ``agent_costs``
+                 dict has the Phase 4 schema
+                 ``{input_tokens, output_tokens, cost, call_count}``.
+
+    Returns:
+        A ``rich.panel.Panel`` ready to be inserted into the layout.
+    """
+    costs: dict = getattr(handler, "agent_costs", {})
+
+    if not costs:
+        return Panel(
+            "[dim]Waiting for agent completions...[/dim]",
+            title="AI Costs",
+            border_style="dim",
+            padding=(1, 2),
+        )
+
+    cost_table = Table(
+        show_header=True,
+        header_style="bold magenta",
+        show_footer=False,
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        padding=(0, 1),
+    )
+    cost_table.add_column("Agent", style="cyan", no_wrap=True)
+    cost_table.add_column("Cost", justify="right", style="green")
+    cost_table.add_column("Tokens", justify="right", style="dim")
+
+    # Sort by cost descending; find the max-cost agent for highlight (D-03)
+    sorted_entries = sorted(
+        costs.items(),
+        key=lambda kv: kv[1].get("cost", 0.0),
+        reverse=True,
+    )
+    max_agent = sorted_entries[0][0] if sorted_entries else None
+
+    total_cost = 0.0
+    total_in = 0
+    total_out = 0
+
+    for agent_key, entry in sorted_entries:
+        c = entry.get("cost", 0.0)
+        in_tok = entry.get("input_tokens", 0)
+        out_tok = entry.get("output_tokens", 0)
+        call_count = entry.get("call_count", 0)
+
+        total_cost += c
+        total_in += in_tok
+        total_out += out_tok
+
+        display_name = COST_PANEL_DISPLAY_NAMES.get(agent_key, agent_key)
+        # Annotate debate-loop agents (call_count > 1) with ×N (D-05/D-06)
+        if call_count > 1:
+            display_name = f"{display_name} ×{call_count}"
+
+        cost_str = f"${c:.4f}"
+        tokens_str = f"{format_tokens(in_tok)}↑ {format_tokens(out_tok)}↓"
+
+        row_style = "bold yellow" if agent_key == max_agent else ""
+        cost_table.add_row(display_name, cost_str, tokens_str, style=row_style)
+
+    # Dim separator then bold total row
+    cost_table.add_row(
+        Text("─" * 20, style="dim"),
+        Text("─" * 8, style="dim"),
+        Text("─" * 10, style="dim"),
+    )
+    total_tokens_str = f"{format_tokens(total_in)}↑ {format_tokens(total_out)}↓"
+    cost_table.add_row(
+        Text("Total", style="bold"),
+        Text(f"${total_cost:.4f}", style="bold green"),
+        Text(total_tokens_str, style="bold"),
+    )
+
+    return Panel(
+        cost_table,
+        title="AI Costs",
+        border_style="green",
+        padding=(1, 2),
+    )
 
 
 def _render_budget_halt_panel(console, err, handler) -> None:
@@ -1183,7 +1313,7 @@ def run_analysis(checkpoint: bool = False):
     try:
         with Live(layout, refresh_per_second=4):
             # Initial display
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
 
             # Add initial messages
             message_buffer.add_message("System", f"Selected ticker: {selections['ticker']}")
@@ -1196,19 +1326,19 @@ def run_analysis(checkpoint: bool = False):
                 "System",
                 f"Selected analysts: {', '.join(analyst.value for analyst in selections['analysts'])}",
             )
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
 
             # Update agent status to in_progress for the first analyst
             first_analyst = get_initial_analyst_node(analyst_execution_plan)
             message_buffer.update_agent_status(first_analyst, "in_progress")
             analyst_wall_time_tracker.mark_started(selected_analyst_keys[0])
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
 
             # Create spinner text
             spinner_text = (
                 f"Analyzing {selections['ticker']} on {selections['analysis_date']}..."
             )
-            update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
+            update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
 
             # Initialize state and get graph args with callbacks.
             # Resolve the instrument identity once here so all agents anchor to
@@ -1329,7 +1459,7 @@ def run_analysis(checkpoint: bool = False):
                         message_buffer.update_agent_status("Portfolio Manager", "completed")
 
                 # Update the display
-                update_display(layout, stats_handler=stats_handler, start_time=start_time)
+                update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
 
                 trace.append(chunk)
 
@@ -1353,7 +1483,7 @@ def run_analysis(checkpoint: bool = False):
                 if section in final_state:
                     message_buffer.update_report_section(section, final_state[section])
 
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
     except BudgetExceededError as err:
         # Run halted by Revenium enforcement (CTL-02).
         # The Live context has already exited before the except handler runs.
