@@ -227,3 +227,85 @@ class TestCallbackHandlerEnforcementGate:
 
         # Must not raise — bypass is set (keeps keyless test suite green — DMO-04)
         handler.on_chat_model_start(serialized, [], run_id="test-run-id")
+
+
+# ---------------------------------------------------------------------------
+# Tests: _render_budget_halt_panel (CTL-02, D-05, T-03-01)
+# ---------------------------------------------------------------------------
+
+class TestBudgetHaltPanel:
+    """Tests for _render_budget_halt_panel in cli/main.py (CTL-02, D-05).
+
+    Verifies that the halt panel renders correctly and never leaks API key
+    values (T-03-01 — Information Disclosure mitigation).
+    """
+
+    def _make_handler_with_costs(self):
+        """Return a ReveniumCallbackHandler stub with populated agent_costs."""
+        from tradingagents.revenium.callback import ReveniumCallbackHandler
+
+        handler = ReveniumCallbackHandler(
+            client=MagicMock(),
+            attribution={
+                "subscriber_id": "john.demic+trading@revenium.io",
+                "organizationName": "Revenium-Research-Desk",
+                "productName": "trading-signal",
+                "api_key": "rev_mk_secretkey123",
+            },
+            task_type_map={},
+        )
+        # Inject synthetic per-agent cost data
+        handler.agent_costs["Market Analyst"] = {"input_tokens": 500, "output_tokens": 200}
+        handler.agent_costs["Bull Researcher"] = {"input_tokens": 800, "output_tokens": 350}
+        return handler
+
+    @pytest.mark.unit
+    def test_render_budget_halt_panel_renders_without_raising(self):
+        """_render_budget_halt_panel renders without raising given a BudgetExceededError."""
+        from rich.console import Console
+        from cli.main import _render_budget_halt_panel
+
+        err = BudgetExceededError(
+            "Budget exceeded",
+            rule_name="TradingAgents Demo Budget",
+            current_value=1.25,
+            threshold=1.00,
+            resets_at="2026-06-29T00:00:00Z",
+            rule_id=42,
+        )
+        rec_console = Console(record=True)
+        handler = self._make_handler_with_costs()
+
+        # Must not raise
+        _render_budget_halt_panel(rec_console, err, handler)
+
+    @pytest.mark.unit
+    def test_render_budget_halt_panel_content_and_no_key_leakage(self):
+        """Rendered output contains rule name, spent, limit, per-agent rows, no raw key values (T-03-01)."""
+        from rich.console import Console
+        from cli.main import _render_budget_halt_panel
+
+        err = BudgetExceededError(
+            "Budget exceeded",
+            rule_name="TradingAgents Demo Budget",
+            current_value=1.25,
+            threshold=1.00,
+            resets_at="2026-06-29T00:00:00Z",
+            rule_id=42,
+        )
+        rec_console = Console(record=True)
+        handler = self._make_handler_with_costs()
+
+        _render_budget_halt_panel(rec_console, err, handler)
+        output = rec_console.export_text()
+
+        # Required content
+        assert "TradingAgents Demo Budget" in output, "rule_name must appear in panel"
+        assert "1.2500" in output, "spent (current_value) must appear in panel"
+        assert "1.0000" in output, "limit (threshold) must appear in panel"
+        assert "Market Analyst" in output, "per-agent row must appear"
+        assert "Bull Researcher" in output, "per-agent row must appear"
+
+        # T-03-01: no raw key leakage
+        assert "rev_mk_" not in output, "raw rev_mk_* key must never appear in panel output"
+        assert "rev_sk_" not in output, "raw rev_sk_* key must never appear in panel output"
