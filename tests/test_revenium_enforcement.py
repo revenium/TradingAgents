@@ -22,7 +22,6 @@ import pytest
 from revenium_middleware._core import enforcement
 from revenium_middleware._core.exceptions import BudgetExceededError
 
-
 # ---------------------------------------------------------------------------
 # Autouse fixture — enforcement module isolation
 # ---------------------------------------------------------------------------
@@ -228,6 +227,45 @@ class TestCallbackHandlerEnforcementGate:
         # Must not raise — bypass is set (keeps keyless test suite green — DMO-04)
         handler.on_chat_model_start(serialized, [], run_id="test-run-id")
 
+    @pytest.mark.unit
+    def test_non_budget_exception_from_check_enforcement_fails_open(self, monkeypatch):
+        """A non-BudgetExceededError from check_enforcement must NOT abort the run (CR-01).
+
+        ONLY BudgetExceededError is the deliberate exception to the fail-open
+        convention (D-03).  Every other error from the enforcement engine — a
+        network blip, a malformed compiled-rules payload, an SDK error — must be
+        swallowed so a single Revenium hiccup never crashes the live trading run.
+        The gate must continue into the normal capture path afterwards.
+        """
+        import tradingagents.revenium.callback as cb
+
+        monkeypatch.setenv("REVENIUM_CIRCUIT_BREAKER_ENABLED", "true")
+
+        def _boom(_payload):
+            raise RuntimeError("revenium enforcement network blip")
+
+        monkeypatch.setattr(cb, "check_enforcement", _boom)
+
+        mock_client = MagicMock()
+        mock_client.enabled = True
+        handler = cb.ReveniumCallbackHandler(
+            client=mock_client,
+            attribution={
+                "subscriber_id": "john.demic+trading@revenium.io",
+                "organizationName": "Revenium-Research-Desk",
+                "productName": "trading-signal",
+                "api_key": "rev_mk_test",
+            },
+            task_type_map={},
+        )
+        serialized = _make_serialized()
+
+        # Must NOT raise — the non-budget error fails open and the run continues.
+        handler.on_chat_model_start(serialized, [], run_id="test-run-id")
+
+        # Fail-open means the normal capture path still ran after the swallowed error.
+        assert "test-run-id" in handler._call_state
+
 
 # ---------------------------------------------------------------------------
 # Tests: _render_budget_halt_panel (CTL-02, D-05, T-03-01)
@@ -263,6 +301,7 @@ class TestBudgetHaltPanel:
     def test_render_budget_halt_panel_renders_without_raising(self):
         """_render_budget_halt_panel renders without raising given a BudgetExceededError."""
         from rich.console import Console
+
         from cli.main import _render_budget_halt_panel
 
         err = BudgetExceededError(
@@ -283,6 +322,7 @@ class TestBudgetHaltPanel:
     def test_render_budget_halt_panel_content_and_no_key_leakage(self):
         """Rendered output contains rule name, spent, limit, per-agent rows, no raw key values (T-03-01)."""
         from rich.console import Console
+
         from cli.main import _render_budget_halt_panel
 
         err = BudgetExceededError(

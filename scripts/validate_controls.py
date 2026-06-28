@@ -102,7 +102,7 @@ def main() -> int:
     print(f"\nValidating Revenium cost controls — {datetime.now(timezone.utc).isoformat()}")
     print(f"  Ticker       : {ticker}")
     print(f"  Trade date   : {trade_date}")
-    print(f"  Metering key : {api_key[:12]}... (hidden)")
+    print("  Metering key : set (hidden)")
     print()
 
     graph = TradingAgentsGraph(config=config)

@@ -69,7 +69,7 @@ from typing import Any
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import LLMResult
-from revenium_middleware._core import BudgetExceededError, check_enforcement  # noqa: F401
+from revenium_middleware._core import BudgetExceededError, check_enforcement
 
 from tradingagents.revenium.client import ReveniumClient
 from tradingagents.revenium.config import attribution_from_config, task_type_for_node
@@ -309,14 +309,25 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             return
 
         # Enforcement gate — D-03: deliberate exception to the fail-open
-        # convention.  BudgetExceededError must NOT be caught below; it must
-        # propagate to _run_graph / CLI so the run halts cleanly (CTL-01/02).
+        # convention.  ONLY BudgetExceededError is allowed to propagate to
+        # _run_graph / CLI so the run halts cleanly (CTL-01/02).  Every OTHER
+        # exception (network blip, malformed compiled-rules payload, SDK error)
+        # must fail open — a Revenium hiccup must never abort the trading run
+        # (CR-01: a single provider hiccup mid-demo would otherwise crash it).
         # No-op when REVENIUM_CIRCUIT_BREAKER_ENABLED is unset or
         # REVENIUM_BYPASS=true (keeps keyless test suite green — DMO-04).
         # subscriber_credential is a PII email — never logged here (T-03-02).
-        check_enforcement({
-            "subscriber_credential": self._attribution.get("subscriber_id", ""),
-        })
+        try:
+            check_enforcement({
+                "subscriber_credential": self._attribution.get("subscriber_id", ""),
+            })
+        except BudgetExceededError:
+            raise  # D-03: deliberate propagation — the run must halt
+        except Exception:  # noqa: BLE001 — fail open, never block the run
+            logger.warning(
+                "Revenium enforcement check failed — continuing without enforcement",
+                exc_info=True,
+            )
 
         try:
             run_id = str(kwargs.get("run_id", uuid.uuid4()))
