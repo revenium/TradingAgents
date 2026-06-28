@@ -9,10 +9,13 @@ Key invariants validated:
 - Every payload carries transaction_name (== agent), trace_name (== "{ticker}-{date}"),
   and trace_type (== "trading-run") when emitted inside revenium_run_context.
 - current_parent_transaction_id resets to "" on revenium_run_context exit (normal and exception).
+- The parent chain and trace_id survive LangGraph's per-node copy_context().run() isolation
+  (GAP-02-01 regression guard, fixed in 02-03 via handler-instance state).
 """
 
 from __future__ import annotations
 
+import contextvars
 import uuid
 from typing import Any
 from unittest.mock import MagicMock
@@ -300,4 +303,126 @@ class TestParentTransactionIdReset:
 
         assert current_parent_transaction_id.get() == "", (
             "parent_transaction_id must be '' after exception in revenium_run_context"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: cross-node copy_context().run() regression (GAP-02-01)
+# ---------------------------------------------------------------------------
+
+class TestCrossNodeContextIsolation:
+    """Regression guard for LangGraph per-node copy_context().run() context isolation.
+
+    LangGraph executes every node inside its own copy_context().run(), so a
+    contextvar write in node A's on_llm_end is invisible to node B's
+    on_chat_model_start — each node starts from a fresh copy of the base context.
+    This is the root cause documented in 02-VERIFICATION.md (GAP-02-01).
+
+    The fix (02-03 Task 2): move run-scoped trace state off per-node contextvars
+    and onto the single shared handler instance (begin_run/_last_transaction_id).
+    Since the handler instance is shared across all nodes, instance-state writes
+    from node A are visible to node B regardless of copy_context() isolation.
+
+    These tests FAIL against the pre-Task-2 callback.py (no begin_run method →
+    AttributeError) and PASS after Task 2 lands.  A single linear call sequence
+    is insufficient to expose the bug — copy_context().run() is required.
+    """
+
+    @pytest.mark.unit
+    def test_parent_chain_survives_cross_node_context_copy(self, handler_with_mock_client):
+        """Parent transaction chain must link across separate copy_context().run() calls.
+
+        Simulates two LangGraph nodes: node A and node B each run inside their
+        own copy_context().run(), mirroring actual LangGraph node execution.
+
+        After Task 2, handler-instance _last_transaction_id carries the chain:
+        - node A's on_llm_end advances self._last_transaction_id to transaction_id_A
+        - node B's on_chat_model_start reads self._last_transaction_id → parent_tid_B = transaction_id_A
+        - captured[1]["parent_transaction_id"] == captured[0]["transaction_id"]
+
+        Before Task 2 (no begin_run → AttributeError), this test is RED.
+        """
+        handler, captured = handler_with_mock_client
+
+        trace_id = str(uuid.uuid4())
+        # begin_run does not exist on pre-Task-2 code → AttributeError → RED.
+        handler.begin_run(trace_id, "NVDA", "2026-06-27")
+
+        run_id_a = uuid.uuid4()
+        run_id_b = uuid.uuid4()
+
+        def node_a() -> None:
+            handler.on_chat_model_start(_make_serialized(), [[]], run_id=run_id_a)
+            handler.on_llm_end(_make_llm_result(), run_id=run_id_a)
+
+        def node_b() -> None:
+            handler.on_chat_model_start(_make_serialized(), [[]], run_id=run_id_b)
+            handler.on_llm_end(_make_llm_result(), run_id=run_id_b)
+
+        # Each node starts from an independent copy of the base context — contextvar
+        # writes inside node_a's copy_context are invisible to node_b's copy.
+        ctx_a = contextvars.copy_context()
+        ctx_a.run(node_a)
+
+        ctx_b = contextvars.copy_context()
+        ctx_b.run(node_b)
+
+        _flush_handler_threads(handler)
+
+        assert len(captured) == 2, f"Expected 2 payloads, got {len(captured)}"
+        assert "parent_transaction_id" not in captured[0], (
+            "First span (node A) must not carry parent_transaction_id"
+        )
+        assert captured[1].get("parent_transaction_id") == captured[0].get("transaction_id"), (
+            f"Cross-node chain broken: "
+            f"captured[1].parent_transaction_id={captured[1].get('parent_transaction_id')!r} "
+            f"!= captured[0].transaction_id={captured[0].get('transaction_id')!r}"
+        )
+
+    @pytest.mark.unit
+    def test_trace_id_shared_across_cross_node_copies(self, handler_with_mock_client):
+        """All spans in a run share the same non-empty trace_id across copy_context() nodes.
+
+        Uses begin_run() so trace_id originates from handler-instance state
+        (self._run_trace_id) rather than per-node contextvar inheritance.
+        Both nodes see the same self._run_trace_id regardless of the
+        copy_context() boundary.
+
+        Before Task 2 (no begin_run → AttributeError), this test is RED.
+        """
+        handler, captured = handler_with_mock_client
+
+        trace_id = str(uuid.uuid4())
+        # begin_run does not exist on pre-Task-2 code → AttributeError → RED.
+        handler.begin_run(trace_id, "NVDA", "2026-06-27")
+
+        run_id_a = uuid.uuid4()
+        run_id_b = uuid.uuid4()
+
+        def node_a() -> None:
+            handler.on_chat_model_start(_make_serialized(), [[]], run_id=run_id_a)
+            handler.on_llm_end(_make_llm_result(), run_id=run_id_a)
+
+        def node_b() -> None:
+            handler.on_chat_model_start(_make_serialized(), [[]], run_id=run_id_b)
+            handler.on_llm_end(_make_llm_result(), run_id=run_id_b)
+
+        ctx_a = contextvars.copy_context()
+        ctx_a.run(node_a)
+
+        ctx_b = contextvars.copy_context()
+        ctx_b.run(node_b)
+
+        _flush_handler_threads(handler)
+
+        assert len(captured) == 2, f"Expected 2 payloads, got {len(captured)}"
+        assert captured[0].get("trace_id"), (
+            f"Node A span must carry a non-empty trace_id; got: {captured[0].get('trace_id')!r}"
+        )
+        assert captured[1].get("trace_id"), (
+            f"Node B span must carry a non-empty trace_id; got: {captured[1].get('trace_id')!r}"
+        )
+        assert captured[0]["trace_id"] == captured[1]["trace_id"] == trace_id, (
+            f"All spans must share trace_id={trace_id!r}; "
+            f"got node_a={captured[0].get('trace_id')!r}, node_b={captured[1].get('trace_id')!r}"
         )
