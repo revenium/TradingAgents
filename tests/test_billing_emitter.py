@@ -261,6 +261,72 @@ def test_emit_billing_event_fail_open_when_client_raises():
 
 
 # ---------------------------------------------------------------------------
+# (e2) from_config forwards team_id to AgenticOutcomeSettings (GAP-04-TEAM)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_from_config_forwards_team_id_to_settings():
+    """from_config with revenium_team_id='TEAM123' passes team_id='TEAM123' to AgenticOutcomeSettings."""
+    from tradingagents.revenium.billing import TradingSignalBillingEmitter
+
+    mock_settings_cls = MagicMock()
+    mock_client_cls = MagicMock(return_value=MagicMock())
+
+    config = {
+        "revenium_billing_api_key": "rev_sk_test_fake",
+        "revenium_profitstream_url": "https://api.revenium.io",
+        "revenium_team_id": "TEAM123",
+    }
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "revenium_middleware.agentic_outcomes": MagicMock(
+                AgenticOutcomeClient=mock_client_cls,
+                AgenticOutcomeSettings=mock_settings_cls,
+            )
+        },
+    ):
+        TradingSignalBillingEmitter.from_config(config)
+
+    mock_settings_cls.assert_called_once()
+    assert mock_settings_cls.call_args.kwargs["team_id"] == "TEAM123", (
+        f"Expected team_id='TEAM123', got {mock_settings_cls.call_args.kwargs.get('team_id')!r}"
+    )
+
+
+@pytest.mark.unit
+def test_from_config_team_id_defaults_to_empty_string():
+    """from_config without revenium_team_id in config passes team_id='' to AgenticOutcomeSettings."""
+    from tradingagents.revenium.billing import TradingSignalBillingEmitter
+
+    mock_settings_cls = MagicMock()
+    mock_client_cls = MagicMock(return_value=MagicMock())
+
+    # Omit revenium_team_id entirely — from_config must default to "".
+    config = {
+        "revenium_billing_api_key": "rev_sk_test_fake",
+        "revenium_profitstream_url": "https://api.revenium.io",
+    }
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "revenium_middleware.agentic_outcomes": MagicMock(
+                AgenticOutcomeClient=mock_client_cls,
+                AgenticOutcomeSettings=mock_settings_cls,
+            )
+        },
+    ):
+        TradingSignalBillingEmitter.from_config(config)
+
+    mock_settings_cls.assert_called_once()
+    assert mock_settings_cls.call_args.kwargs["team_id"] == "", (
+        f"Expected team_id='', got {mock_settings_cls.call_args.kwargs.get('team_id')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # (e) validate_billing.main() returns 0 and prints keyless-skip message
 #     when REVENIUM_BILLING_API_KEY is unset (DMO-04 CI safety check)
 # ---------------------------------------------------------------------------
