@@ -109,16 +109,27 @@ class TradingAgentsGraph:
         deep_provider = self.config.get("deep_think_provider") or self.config["llm_provider"]
         quick_provider = self.config.get("quick_think_provider") or self.config["llm_provider"]
 
+        # Gate backend_url per role: cli/main.py resolves backend_url for the PRIMARY
+        # provider (config["llm_provider"]) only.  Forwarding it to a role whose
+        # provider differs from the primary would route that request to the wrong host
+        # (e.g. sending an Anthropic request to an OpenAI endpoint → live HTTP 404 at
+        # the Research Manager node).  A non-primary role must use base_url=None so its
+        # SDK client falls back to its own provider-default endpoint.
+        primary_provider = self.config["llm_provider"]
+        backend_url = self.config.get("backend_url")
+        deep_base = backend_url if deep_provider == primary_provider else None
+        quick_base = backend_url if quick_provider == primary_provider else None
+
         deep_client = create_llm_client(
             provider=deep_provider,
             model=self.config["deep_think_llm"],
-            base_url=self.config.get("backend_url"),
+            base_url=deep_base,
             **llm_kwargs,
         )
         quick_client = create_llm_client(
             provider=quick_provider,
             model=self.config["quick_think_llm"],
-            base_url=self.config.get("backend_url"),
+            base_url=quick_base,
             **llm_kwargs,
         )
 
