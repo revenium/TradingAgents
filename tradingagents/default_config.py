@@ -31,6 +31,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_SIGNAL_PRICE":       "revenium_signal_price",
     "REVENIUM_BILLING_API_KEY":         "revenium_billing_api_key",
     "REVENIUM_PROFITSTREAM_BASE_URL":   "revenium_profitstream_url",
+    "REVENIUM_TEAM_ID":                 "revenium_team_id",
 }
 
 
@@ -193,4 +194,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # path doubles it and produces a 404.  The default api.revenium.io 403s on jobs
     # writes; set REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io for live runs.
     "revenium_profitstream_url":    os.getenv("REVENIUM_PROFITSTREAM_BASE_URL", "https://api.revenium.io"),
+    # Team id for jobs/outcomes attribution — empty default lets the SDK auto-resolve
+    # teams[0], which is the WRONG personal team for the demo tenant.  Set
+    # REVENIUM_TEAM_ID in .env (e.g. the "Trading Agents" demo team) to target the
+    # correct team so meter→trace→control→monetize data lands under the demo tenant.
+    "revenium_team_id":             os.getenv("REVENIUM_TEAM_ID", ""),
 })
