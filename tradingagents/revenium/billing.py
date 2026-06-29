@@ -2,8 +2,9 @@
 
 Wraps ``AgenticOutcomeClient`` from ``revenium_middleware.agentic_outcomes`` so any
 Jobs/Outcomes API failure is logged as a warning and never blocks or corrupts a trading
-run.  The emitter is disabled (silent no-op) when ``revenium_billing_api_key`` is absent,
-so keyless CI suites remain green (DMO-04).
+run.  The emitter is disabled (silent no-op) when the billing key
+(``revenium_sk_api_key``, the same ``rev_sk_*`` write key used for setup and enforcement)
+is absent, so keyless CI suites remain green (DMO-04).
 
 Design rationale:
 - Mirrors ``tradingagents/revenium/client.py``: lazy SDK import in ``__init__``, the
@@ -107,10 +108,14 @@ class TradingSignalBillingEmitter:
     def from_config(cls, config: dict) -> TradingSignalBillingEmitter:
         """Build an emitter from a TradingAgents config dict.
 
-        Reads ``revenium_billing_api_key``, ``revenium_profitstream_url``,
-        and ``revenium_subscriber_id`` from ``config``.  When the billing key
-        is empty the returned emitter has ``enabled == False`` and is a silent
-        no-op.
+        Reads the billing key from ``revenium_sk_api_key`` (primary; the same
+        ``rev_sk_*`` write key used by setup_revenium.py and enforcement).
+        Falls back to the legacy ``revenium_billing_api_key`` alias so existing
+        .env files that set only the old name continue to work (GAP-04-LINK).
+        Also reads ``revenium_profitstream_url``, ``revenium_subscriber_id``,
+        and ``revenium_team_id`` from ``config``.  When the billing key is
+        empty the returned emitter has ``enabled == False`` and is a silent
+        no-op (DMO-04).
 
         Args:
             config: Process-global config dict (from ``get_config()`` or
@@ -119,7 +124,11 @@ class TradingSignalBillingEmitter:
         Returns:
             A fully configured ``TradingSignalBillingEmitter``.
         """
-        api_key: str = config.get("revenium_billing_api_key", "")
+        # Prefer revenium_sk_api_key; fall back to legacy alias (GAP-04-LINK).
+        api_key: str = (
+            config.get("revenium_sk_api_key", "")
+            or config.get("revenium_billing_api_key", "")
+        )
         profitstream_base_url: str = config.get(
             "revenium_profitstream_url", "https://api.revenium.io"
         )

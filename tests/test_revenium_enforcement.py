@@ -392,3 +392,112 @@ class TestBudgetHaltPanel:
         # T-03-01: no raw key leakage
         assert "rev_mk_" not in output, "raw rev_mk_* key must never appear in panel output"
         assert "rev_sk_" not in output, "raw rev_sk_* key must never appear in panel output"
+
+
+# ---------------------------------------------------------------------------
+# Tests: agenticJobId injected into metering payload when trace_id is set
+# ---------------------------------------------------------------------------
+
+class TestAgenticJobIdInMeteringPayload:
+    """on_llm_end attaches extra_body={"agenticJobId": trace_id} when trace_id is non-empty (GAP-04-LINK).
+
+    This links each per-agent metering completion to the billing job whose
+    agenticJobId IS the run trace_id.  Fail-open: no extra_body when trace_id is "".
+    """
+
+    def _make_llm_result(self, input_tokens: int = 50, output_tokens: int = 20):
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, LLMResult
+
+        msg = AIMessage(content="ok")
+        msg.usage_metadata = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+        return LLMResult(generations=[[ChatGeneration(message=msg)]])
+
+    def _make_serialized(self, model: str = "gpt-4.1-mini", provider: str = "openai") -> dict:
+        return {
+            "id": [f"langchain_{provider}", "chat_models", f"Chat{provider.capitalize()}"],
+            "kwargs": {"model_name": model},
+        }
+
+    def _flush(self, handler, timeout: float = 2.0) -> None:
+        for t in list(handler._threads):
+            t.join(timeout=timeout)
+
+    @pytest.mark.unit
+    def test_agentic_job_id_present_when_trace_id_set(self, monkeypatch):
+        """Metering payload includes extra_body={"agenticJobId": trace_id} when trace_id is non-empty."""
+        import uuid
+
+        from tradingagents.revenium.callback import ReveniumCallbackHandler
+
+        captured_payloads: list[dict] = []
+
+        mock_client = MagicMock()
+        mock_client.enabled = True
+        mock_client.meter_ai_completion.side_effect = lambda p: captured_payloads.append(dict(p))
+
+        handler = ReveniumCallbackHandler(
+            client=mock_client,
+            attribution={
+                "subscriber_id": "test@example.com",
+                "organizationName": "TestOrg",
+                "productName": "test-product",
+                "api_key": "rev_mk_test",
+            },
+            task_type_map={},
+        )
+
+        trace_id = uuid.uuid4().hex
+        handler.begin_run(trace_id, "NVDA", "2026-06-29")
+
+        run_id = "test-run-agentic-job-id"
+        serialized = self._make_serialized()
+        handler.on_chat_model_start(serialized, [], run_id=run_id)
+        handler.on_llm_end(self._make_llm_result(), run_id=run_id)
+        self._flush(handler)
+
+        assert len(captured_payloads) == 1, f"Expected 1 metering call, got {len(captured_payloads)}"
+        payload = captured_payloads[0]
+        assert "extra_body" in payload, "payload must contain extra_body when trace_id is set"
+        assert payload["extra_body"] == {"agenticJobId": trace_id}, (
+            f"extra_body must be {{agenticJobId: {trace_id!r}}}, got {payload.get('extra_body')!r}"
+        )
+
+    @pytest.mark.unit
+    def test_no_extra_body_when_trace_id_empty(self, monkeypatch):
+        """Metering payload has no extra_body when no trace_id is set (keyless / no begin_run)."""
+        from tradingagents.revenium.callback import ReveniumCallbackHandler
+
+        captured_payloads: list[dict] = []
+
+        mock_client = MagicMock()
+        mock_client.enabled = True
+        mock_client.meter_ai_completion.side_effect = lambda p: captured_payloads.append(dict(p))
+
+        handler = ReveniumCallbackHandler(
+            client=mock_client,
+            attribution={
+                "subscriber_id": "test@example.com",
+                "organizationName": "TestOrg",
+                "productName": "test-product",
+                "api_key": "rev_mk_test",
+            },
+            task_type_map={},
+        )
+        # No begin_run — trace_id will be empty string
+
+        run_id = "test-run-no-trace"
+        serialized = self._make_serialized()
+        handler.on_chat_model_start(serialized, [], run_id=run_id)
+        handler.on_llm_end(self._make_llm_result(), run_id=run_id)
+        self._flush(handler)
+
+        assert len(captured_payloads) == 1, f"Expected 1 metering call, got {len(captured_payloads)}"
+        payload = captured_payloads[0]
+        assert "extra_body" not in payload, (
+            f"extra_body must be absent when trace_id is empty, got {payload.get('extra_body')!r}"
+        )

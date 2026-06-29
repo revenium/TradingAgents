@@ -14,7 +14,8 @@ resolved as an env-var change without touching code.
   BIL-HOST    Prints the resolved profitstream host (for dashboard confirmation)
 
 Requirements (for live mode):
-  - REVENIUM_BILLING_API_KEY set to a ``rev_sk_*`` write-scope key.
+  - REVENIUM_SK_API_KEY set to a ``rev_sk_*`` write-scope key.
+    This is the same key used for setup_revenium.py and enforcement reads.
     A metering-only ``rev_mk_*`` key is 403 on jobs write endpoints.
   - REVENIUM_PROFITSTREAM_BASE_URL (optional; defaults to https://api.revenium.io).
     Must be HOST-ONLY: https://api.prod.ai.hcapp.io — the AgenticOutcomeClient
@@ -23,7 +24,7 @@ Requirements (for live mode):
     403 on jobs write endpoints; always set the host-only form for live runs.
 
 Keyless mode:
-  When REVENIUM_BILLING_API_KEY is absent the script prints a skip message
+  When REVENIUM_SK_API_KEY is absent the script prints a skip message
   and exits 0 so CI never breaks on missing credentials (DMO-04).
 
 Usage:
@@ -31,8 +32,8 @@ Usage:
     python scripts/validate_billing.py
 
     # Live (with billing key):
-    REVENIUM_BILLING_API_KEY=rev_sk_... python scripts/validate_billing.py
-    REVENIUM_BILLING_API_KEY=rev_sk_... REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\
+    REVENIUM_SK_API_KEY=rev_sk_... python scripts/validate_billing.py
+    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\
         python scripts/validate_billing.py --ticker NVDA --date 2026-06-28
 """
 
@@ -94,12 +95,17 @@ def main() -> int:
     config = dict(DEFAULT_CONFIG)
 
     # ------------------------------------------------------------------
-    # Gate: REVENIUM_BILLING_API_KEY must be set for live assertions.
+    # Gate: REVENIUM_SK_API_KEY must be set for live assertions.
+    # Falls back to the legacy REVENIUM_BILLING_API_KEY alias so existing
+    # .env files continue to work (GAP-04-LINK).
     # Keyless mode exits 0 so CI never breaks on missing credentials (DMO-04).
     # ------------------------------------------------------------------
-    api_key: str = config.get("revenium_billing_api_key", "")
+    api_key: str = (
+        config.get("revenium_sk_api_key", "")
+        or config.get("revenium_billing_api_key", "")
+    )
     if not api_key:
-        print("no REVENIUM_BILLING_API_KEY — keyless mode, skipping live assertions")
+        print("no REVENIUM_SK_API_KEY — keyless mode, skipping live assertions")
         return 0
 
     # ------------------------------------------------------------------

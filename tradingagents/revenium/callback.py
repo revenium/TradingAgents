@@ -470,6 +470,12 @@ class ReveniumCallbackHandler(BaseCallbackHandler):
             # Only include trace_id when it is non-empty (avoid sending blank UUIDs)
             if trace_id:
                 payload["trace_id"] = trace_id
+                # Link this per-agent metering event to the billing job whose
+                # agenticJobId IS the run trace_id (GAP-04-LINK).  extra_body is
+                # forwarded verbatim by create_completion(**payload) to the SDK.
+                # Merge rather than clobber in case a caller pre-populated extra_body.
+                existing_extra: dict = payload.get("extra_body") or {}
+                payload["extra_body"] = {**existing_extra, "agenticJobId": trace_id}
             if parent_tid:
                 payload["parent_transaction_id"] = parent_tid
             if trace_name:

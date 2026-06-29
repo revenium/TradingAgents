@@ -29,6 +29,9 @@ _ENV_OVERRIDES = {
     "REVENIUM_TRACE_TYPE":          "revenium_trace_type",
     # Revenium billing / monetize pillar (Phase 4, D-07, BIL-01)
     "TRADINGAGENTS_SIGNAL_PRICE":       "revenium_signal_price",
+    # rev_sk_* write key — used for billing (jobs/outcomes) and enforcement reads.
+    # Replaces the narrower REVENIUM_BILLING_API_KEY alias (GAP-04-LINK).
+    "REVENIUM_SK_API_KEY":              "revenium_sk_api_key",
     "REVENIUM_BILLING_API_KEY":         "revenium_billing_api_key",
     "REVENIUM_PROFITSTREAM_BASE_URL":   "revenium_profitstream_url",
     "REVENIUM_TEAM_ID":                 "revenium_team_id",
@@ -186,8 +189,12 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # _coerce's isinstance(reference, float) branch fires correctly when
     # TRADINGAGENTS_SIGNAL_PRICE is set via env (Pitfall 5).
     "revenium_signal_price":        2.00,
-    # rev_sk_* write-scope key (NOT rev_mk_*; metering-only keys are 403 on jobs writes).
+    # rev_sk_* write-scope key — primary billing key (GAP-04-LINK).
+    # Used for Jobs/Outcomes writes (create_job/report_outcome) AND enforcement reads.
+    # The same key provisioned by scripts/setup_revenium.py.
     # When empty the billing emitter is a silent no-op (DMO-04).
+    "revenium_sk_api_key":          os.getenv("REVENIUM_SK_API_KEY", ""),
+    # Legacy alias kept for backwards compatibility; from_config prefers revenium_sk_api_key.
     "revenium_billing_api_key":     os.getenv("REVENIUM_BILLING_API_KEY", ""),
     # Jobs/Outcomes profitstream host — must be HOST-ONLY (no path suffix).
     # The AgenticOutcomeClient appends /profitstream/v2/api itself; supplying the full

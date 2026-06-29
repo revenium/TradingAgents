@@ -137,12 +137,46 @@ def test_emitter_disabled_when_no_api_key():
 
 @pytest.mark.unit
 def test_from_config_disabled_when_no_billing_key():
-    """from_config with empty revenium_billing_api_key yields disabled emitter."""
+    """from_config with empty keys (both revenium_sk_api_key and legacy alias) yields disabled emitter."""
     from tradingagents.revenium.billing import TradingSignalBillingEmitter
 
-    config = {"revenium_billing_api_key": "", "revenium_profitstream_url": "https://api.revenium.io"}
+    config = {
+        "revenium_sk_api_key": "",
+        "revenium_billing_api_key": "",
+        "revenium_profitstream_url": "https://api.revenium.io",
+    }
     emitter = TradingSignalBillingEmitter.from_config(config)
     assert emitter.enabled is False
+
+
+@pytest.mark.unit
+def test_from_config_enabled_with_sk_api_key():
+    """from_config with revenium_sk_api_key set yields enabled emitter (GAP-04-LINK)."""
+    from tradingagents.revenium.billing import TradingSignalBillingEmitter
+
+    mock_settings_cls = MagicMock()
+    mock_client_cls = MagicMock(return_value=MagicMock())
+
+    config = {
+        "revenium_sk_api_key": "rev_sk_x",
+        "revenium_profitstream_url": "https://api.prod.ai.hcapp.io",
+        "revenium_team_id": "T1",
+    }
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "revenium_middleware.agentic_outcomes": MagicMock(
+                AgenticOutcomeClient=mock_client_cls,
+                AgenticOutcomeSettings=mock_settings_cls,
+            )
+        },
+    ):
+        emitter = TradingSignalBillingEmitter.from_config(config)
+
+    assert emitter.enabled is True, (
+        "from_config with revenium_sk_api_key='rev_sk_x' must yield enabled=True"
+    )
 
 
 # ---------------------------------------------------------------------------
