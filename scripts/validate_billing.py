@@ -111,11 +111,16 @@ def main() -> int:
     ticker: str = args.ticker
     trade_date: str = args.date
     profitstream_host: str = config.get("revenium_profitstream_url", "https://api.revenium.io")
+    team_id: str = config.get("revenium_team_id", "")
 
     print(f"\nValidating Revenium billing — {datetime.now(timezone.utc).isoformat()}")
     print(f"  Ticker            : {ticker}")
     print(f"  Trade date        : {trade_date}")
     print(f"  Profitstream host : {profitstream_host}")
+    if team_id:
+        print(f"  Team id (configured) : {team_id}")
+    else:
+        print("  Team id (configured) : (empty — SDK will auto-resolve teams[0], likely the wrong team)")
     print("  Billing key       : set (hidden)")
     print()
 
@@ -126,6 +131,7 @@ def main() -> int:
         api_key=api_key,
         profitstream_base_url=profitstream_host,
         outcome_api_key=api_key,
+        team_id=team_id,
     )
     client = AgenticOutcomeClient(settings=settings)
 
