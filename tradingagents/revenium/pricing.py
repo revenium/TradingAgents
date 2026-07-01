@@ -117,10 +117,13 @@ def compute_cost(
     best_key: tuple[str, str] | None = None
     best_len = -1
     for (table_provider, model_substring) in _PER_MILLION:
-        if table_provider == provider_lower and model_substring in model_lower:
-            if len(model_substring) > best_len:
-                best_len = len(model_substring)
-                best_key = (table_provider, model_substring)
+        if (
+            table_provider == provider_lower
+            and model_substring in model_lower
+            and len(model_substring) > best_len
+        ):
+            best_len = len(model_substring)
+            best_key = (table_provider, model_substring)
 
     if best_key is None:
         return 0.0
