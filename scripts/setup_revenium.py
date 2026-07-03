@@ -632,6 +632,55 @@ def _setup_cost_rule(base_url: str, sk_key: str, team_id: str, dry_run: bool) ->
 _DEFAULT_JENTIC_UNIT_PRICE = "0.05"
 
 
+def _update_tool_pricing(
+    profitstream_host: str,
+    sk_key: str,
+    team_id: str,
+    tool_id: str,
+    payload: dict,
+) -> bool:
+    """Upsert pricing on an already-existing ToolResource (GET id -> PUT payload).
+
+    Works around a Revenium backend gap: ``POST /v2/api/tools`` on an existing
+    ``toolId`` returns 409 WITHOUT applying the pricing element, so re-running a
+    POST alone leaves an unpriced tool unpriced.  This looks the tool up by
+    ``toolId`` and PUTs the full payload to ``/v2/api/tools/{id}`` so pricing is
+    applied in place.  (Backend ticket filed for the FE/BE gap.)
+    """
+    base = f"{profitstream_host.rstrip('/')}/profitstream/v2/api/tools"
+    quoted = requests.utils.quote(tool_id, safe="")
+    try:
+        get_resp = requests.get(
+            f"{base}/by-tool-id/{quoted}",
+            headers=_headers(sk_key),
+            params={"teamId": team_id},
+            timeout=15,
+        )
+        if get_resp.status_code != 200:
+            print(f"    FAIL [Jentic tool upsert] fetch existing tool HTTP "
+                  f"{get_resp.status_code}: {get_resp.text[:200]}")
+            return False
+        resource_id = (get_resp.json() or {}).get("id")
+        if not resource_id:
+            print("    FAIL [Jentic tool upsert] existing tool has no id")
+            return False
+        put_resp = requests.put(
+            f"{base}/{resource_id}",
+            headers=_headers(sk_key),
+            json=payload,
+            timeout=15,
+        )
+        if put_resp.status_code in (200, 201):
+            unit = payload["pricing"]["elements"][0]["unitPrice"]
+            print(f"    updated pricing (id={resource_id}, toolId={tool_id}, ${unit}/call)")
+            return True
+        print(f"    FAIL [Jentic tool upsert] PUT HTTP {put_resp.status_code}: {put_resp.text[:200]}")
+        return False
+    except Exception as exc:  # noqa: BLE001 — fail open; report verbatim
+        print(f"    FAIL [Jentic tool upsert] unexpected error: {exc}")
+        return False
+
+
 def register_jentic_tool(
     profitstream_host: str,
     sk_key: str,
@@ -724,17 +773,17 @@ def register_jentic_tool(
             print(f"    created (id={resource_id}, toolId={tool_id})")
             return True
 
-        if resp.status_code == 409:
-            # Already exists — idempotent; treat as success.
-            print(f"    already exists (toolId={tool_id}) — OK")
-            return True
-
-        # Check if body text suggests duplicate / already exists.
         body_lower = resp.text[:500].lower()
-        if resp.status_code in (400, 422) and ("already" in body_lower or "exists" in body_lower
-                                                or "duplicate" in body_lower or "conflict" in body_lower):
-            print(f"    already exists (HTTP {resp.status_code}, body indicates duplicate) — OK")
-            return True
+        _is_duplicate = resp.status_code == 409 or (
+            resp.status_code in (400, 422)
+            and any(w in body_lower for w in ("already", "exists", "duplicate", "conflict"))
+        )
+        if _is_duplicate:
+            # Already exists — UPSERT pricing in place. A bare POST-on-existing
+            # (409) does NOT apply pricing server-side (backend gap), so an
+            # unpriced tool would stay unpriced on re-run. Look up + PUT instead.
+            print(f"    already exists (toolId={tool_id}) — updating pricing via PUT")
+            return _update_tool_pricing(profitstream_host, sk_key, team_id, tool_id, payload)
 
         # 401 / 404 — likely a host mismatch; provide the alternate-host hint (T-06-05).
         if resp.status_code in (401, 403, 404):
