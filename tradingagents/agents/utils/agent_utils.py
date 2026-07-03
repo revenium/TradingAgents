@@ -14,6 +14,7 @@ from tradingagents.agents.utils.fundamental_data_tools import (
     get_fundamentals,
     get_income_statement,
 )
+from tradingagents.agents.utils.edgehound_tools import get_edgehound_decision
 from tradingagents.agents.utils.jentic_news_tools import get_jentic_news
 from tradingagents.agents.utils.macro_data_tools import get_macro_indicators
 from tradingagents.agents.utils.market_data_validation_tools import get_verified_market_snapshot
@@ -40,6 +41,7 @@ __all__ = [
     "get_macro_indicators",
     "get_prediction_markets",
     "get_jentic_news",
+    "get_edgehound_decision",
     "get_verified_market_snapshot",
     "build_instrument_context",
     "resolve_instrument_identity",

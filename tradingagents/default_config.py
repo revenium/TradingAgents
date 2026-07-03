@@ -41,6 +41,9 @@ _ENV_OVERRIDES = {
     "JENTIC_OP_ID":          "jentic_op_id",
     "JENTIC_SEARCH_QUERY":   "jentic_search_query",
     "JENTIC_TOOL_ID":        "jentic_tool_id",
+    # Edgehound decision-intelligence tool (Phase 7, PIL-01)
+    "EDGEHOUND_TOOL_ENABLED": "edgehound_tool_enabled",
+    "EDGEHOUND_TOOL_ID":      "edgehound_tool_id",
 }
 
 
@@ -233,4 +236,14 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # NOTE: must NOT contain ':' — Revenium's Tools UI validation rejects colons
     # in the tool name (API accepts it, UI does not; FE ticket open). Use '_'.
     "jentic_tool_id":               os.getenv("JENTIC_TOOL_ID", "jentic_news"),
+    # ── Edgehound decision-intelligence tool (Phase 7, PIL-01) ─────────────────
+    # edgehound_tool_enabled: master switch for the Edgehound mock tool. Must be
+    # a bool literal so _coerce converts EDGEHOUND_TOOL_ENABLED="true"/"1" correctly.
+    # When False, the LLM is not offered the tool (gated in market_analyst).
+    # The tool itself is a fully local mock — no network, no API key required.
+    "edgehound_tool_enabled":        False,
+    # Stable toolId for the Edgehound decision-intelligence tool event. Must NOT
+    # contain ':' (Revenium UI rejects colons). Single source of truth (L6) —
+    # never hardcode in tool code; @meter_tool reads it from here.
+    "edgehound_tool_id":             os.getenv("EDGEHOUND_TOOL_ID", "edgehound_decision"),
 })
