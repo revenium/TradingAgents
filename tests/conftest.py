@@ -87,6 +87,19 @@ def _reset_revenium_contextvars():
     current_run_meta.reset(tok_meta)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_jentic_key(monkeypatch):
+    """Force JENTIC_AGENT_API_KEY to empty for every test.
+
+    Prevents a developer's live .env key from leaking into the keyless unit
+    suite and accidentally triggering real Jentic API calls or config-gate
+    branches that assume an empty key (Phase 6, JEN-01, T-06-01, Pitfall 5).
+    Intentionally uses empty string rather than "placeholder" so that the
+    config-gate in the Jentic tool returns NO_DATA_AVAILABLE immediately.
+    """
+    monkeypatch.setenv("JENTIC_AGENT_API_KEY", "")
+
+
 @pytest.fixture()
 def mock_llm_client():
     client = MagicMock()

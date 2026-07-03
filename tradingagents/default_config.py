@@ -35,6 +35,12 @@ _ENV_OVERRIDES = {
     "REVENIUM_BILLING_API_KEY":         "revenium_billing_api_key",
     "REVENIUM_PROFITSTREAM_BASE_URL":   "revenium_profitstream_url",
     "REVENIUM_TEAM_ID":                 "revenium_team_id",
+    # Jentic tool metering / monetization (Phase 6, JEN-01)
+    "JENTIC_TOOL_ENABLED":   "jentic_tool_enabled",
+    "JENTIC_AGENT_API_KEY":  "jentic_agent_api_key",
+    "JENTIC_OP_ID":          "jentic_op_id",
+    "JENTIC_SEARCH_QUERY":   "jentic_search_query",
+    "JENTIC_TOOL_ID":        "jentic_tool_id",
 }
 
 
@@ -206,4 +212,23 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # REVENIUM_TEAM_ID in .env (e.g. the "Trading Agents" demo team) to target the
     # correct team so meter→trace→control→monetize data lands under the demo tenant.
     "revenium_team_id":             os.getenv("REVENIUM_TEAM_ID", ""),
+    # ── Jentic tool metering / monetization (Phase 6, JEN-01) ──────────────────
+    # jentic_tool_enabled: master switch for the Jentic-backed news tool. Must be
+    # a bool literal so _coerce converts JENTIC_TOOL_ENABLED="true"/"1" correctly.
+    "jentic_tool_enabled":          False,
+    # API key for Jentic's managed-auth gateway (JENTIC_AGENT_API_KEY env var).
+    # Default is empty string — when empty, the tool returns NO_DATA_AVAILABLE
+    # (fail-soft) and never crashes the run. Never log this value (T-06-01).
+    "jentic_agent_api_key":         os.getenv("JENTIC_AGENT_API_KEY", ""),
+    # Pinned operation-id for newsapi.org/main getEverything in the Jentic catalog.
+    # Account-specific — keep in config, not hardcoded in tool code (CLAUDE.md
+    # no-provider-hardcoding rule). Empty string falls back to search-by-query.
+    "jentic_op_id":                 os.getenv("JENTIC_OP_ID", "op_ba86fdce1bade1b7"),
+    # Fallback search query when jentic_op_id is unset (search→load→execute path).
+    "jentic_search_query":          os.getenv("JENTIC_SEARCH_QUERY", "get news headlines for a stock ticker"),
+    # Stable toolId emitted in Revenium tool events AND used as the ToolResource
+    # registration key for per-call pricing. Must exactly match the toolId in the
+    # Revenium price model (see 06-CONTEXT.md pricing mechanism). Single source
+    # of truth — never hardcode this in tool code; always read from config (L6).
+    "jentic_tool_id":               os.getenv("JENTIC_TOOL_ID", "jentic:news"),
 })
