@@ -841,6 +841,17 @@ _PARTNER_TOOLS: list[dict] = [
         "price_env": "TRINIGENCE_TOOL_PRICE",
         "default_price": "0.25",
     },
+    {
+        "tool_id_key": "saif_tool_id",
+        "name": "SAIF Safety & Assurance Gate",
+        "description": (
+            "Mocked safety/assurance gate on the Portfolio Manager decision "
+            "(pass/flag governance verdict), metered+priced per-call by Revenium (PIL-03)."
+        ),
+        "provider": "saif",
+        "price_env": "SAIF_TOOL_PRICE",
+        "default_price": "0.15",
+    },
 ]
 
 

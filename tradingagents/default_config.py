@@ -47,6 +47,9 @@ _ENV_OVERRIDES = {
     # Trinigence NL→strategy-generation tool (Phase 7, PIL-02)
     "TRINIGENCE_TOOL_ENABLED": "trinigence_tool_enabled",
     "TRINIGENCE_TOOL_ID":      "trinigence_tool_id",
+    # SAIF safety/assurance gate (Phase 7, PIL-03)
+    "SAIF_TOOL_ENABLED": "saif_tool_enabled",
+    "SAIF_TOOL_ID":      "saif_tool_id",
 }
 
 
@@ -259,4 +262,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # contain ':' (Revenium UI rejects colons). Single source of truth (L6) —
     # never hardcode in tool code; @meter_tool reads it from here.
     "trinigence_tool_id":            os.getenv("TRINIGENCE_TOOL_ID", "trinigence_strategy"),
+    # ── SAIF safety/assurance gate (Phase 7, PIL-03) ────────────────────────────
+    # saif_tool_enabled: master switch for the SAIF assurance gate. Must be
+    # a bool literal so _coerce converts SAIF_TOOL_ENABLED="true"/"1" correctly.
+    # When False, the SAIF gate node is NOT wired into the graph (build-time gate
+    # in setup.py). The gate is a fully local mock — no network, no API key.
+    # SAIF is a GATE, not an analyst data tool; NOT re-exported through agent_utils.
+    "saif_tool_enabled":             False,
+    # Stable toolId for the SAIF assurance gate event. Must NOT contain ':'
+    # (Revenium UI rejects colons). Single source of truth (L6) — never
+    # hardcode in gate code; @meter_tool reads it from here.
+    "saif_tool_id":                  os.getenv("SAIF_TOOL_ID", "saif_assurance"),
 })
