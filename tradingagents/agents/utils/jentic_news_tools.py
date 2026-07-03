@@ -4,7 +4,8 @@ Purpose
 -------
 Provides ``get_jentic_news``, a LangChain ``@tool`` that fetches external
 news data via the Jentic SDK's async ``execute()`` call and meters each call
-through Revenium's tool-event pipeline (``@meter_tool("jentic:news")``).
+through Revenium's tool-event pipeline (``@meter_tool(DEFAULT_CONFIG["jentic_tool_id"])``,
+default ``jentic_news`` — no colon: Revenium's Tools UI rejects ':').
 
 This extends Phase 3's MTR-03 from internal data-fetch tools to real
 third-party API calls, completing the "cost iceberg" demo beat.
@@ -48,6 +49,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.revenium.meter_tool import meter_tool
 
 logger = logging.getLogger(__name__)
@@ -174,7 +176,7 @@ def _jentic_news_impl(query: str) -> str:
 
 
 @tool
-@meter_tool("jentic:news")
+@meter_tool(DEFAULT_CONFIG["jentic_tool_id"])  # single source of truth (L6); no colon (Revenium UI)
 def get_jentic_news(
     query: Annotated[str, "News search query, e.g. 'NVDA latest earnings news'"],
 ) -> str:

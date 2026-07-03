@@ -4,7 +4,7 @@ Verifies the full JEN-04 pipeline:
 
   JEN-LIST  ``list_apis()`` succeeds and shows a credentialed news API
   JEN-EXEC  ``get_jentic_news`` returns real content (not NO_DATA_AVAILABLE)
-  JEN-METER ``@meter_tool`` fired exactly one tool event with toolId=jentic:news
+  JEN-METER ``@meter_tool`` fired exactly one tool event with toolId=jentic_news
 
 Prints PASS/FAIL per check and exits 0 on all-PASS, 1 on any FAIL.
 
@@ -122,7 +122,7 @@ def main() -> int:
     set_config(config)
     config = get_config()
 
-    tool_id: str = config.get("jentic_tool_id", "jentic:news")
+    tool_id: str = config.get("jentic_tool_id", "jentic_news")
     op_id_cfg: str = config.get("jentic_op_id", "")
 
     print(f"\nValidating Jentic tool metering — {datetime.now(timezone.utc).isoformat()}")

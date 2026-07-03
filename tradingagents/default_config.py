@@ -230,5 +230,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # registration key for per-call pricing. Must exactly match the toolId in the
     # Revenium price model (see 06-CONTEXT.md pricing mechanism). Single source
     # of truth — never hardcode this in tool code; always read from config (L6).
-    "jentic_tool_id":               os.getenv("JENTIC_TOOL_ID", "jentic:news"),
+    # NOTE: must NOT contain ':' — Revenium's Tools UI validation rejects colons
+    # in the tool name (API accepts it, UI does not; FE ticket open). Use '_'.
+    "jentic_tool_id":               os.getenv("JENTIC_TOOL_ID", "jentic_news"),
 })

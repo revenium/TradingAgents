@@ -643,7 +643,7 @@ def register_jentic_tool(
     """Register a per-call priced ToolResource for the Jentic news tool (JEN-02).
 
     POSTs to ``{profitstream_host}/profitstream/v2/api/tools`` with a COUNT
-    pricing element so every emitted ``jentic:news`` tool event accrues a per-call
+    pricing element so every emitted ``jentic_news`` tool event accrues a per-call
     cost in Revenium.  The ``toolId`` MUST exactly match the string emitted by
     ``@meter_tool`` in ``jentic_news_tools.py`` (``jentic_tool_id`` config key, L6).
 
@@ -819,7 +819,7 @@ def main() -> int:
             or DEFAULT_CONFIG.get("revenium_profitstream_url", "https://api.revenium.io")
         ).rstrip("/")
 
-        tool_id: str = DEFAULT_CONFIG.get("jentic_tool_id", "jentic:news")
+        tool_id: str = DEFAULT_CONFIG.get("jentic_tool_id", "jentic_news")
         unit_price: str = os.getenv("JENTIC_TOOL_PRICE", _DEFAULT_JENTIC_UNIT_PRICE)
 
         mode = "[DRY-RUN]" if args.dry_run else "[LIVE]"

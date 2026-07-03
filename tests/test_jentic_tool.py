@@ -11,7 +11,7 @@ Coverage:
 - JEN-01: fail-soft sentinel when disabled; sentinel when keyless.
 - JEN-01: async→sync bridge (_run_async) returns the coroutine result.
 - JEN-02: @meter_tool fires exactly one Revenium tool event per execute()
-  with the correct tool_id ("jentic:news") when op_id is pinned.
+  with the correct tool_id ("jentic_news") when op_id is pinned.
 - JEN-01/JEN-02: fail-soft — Jentic execute() exception → NO_DATA_AVAILABLE,
   never propagates.
 
@@ -21,9 +21,9 @@ is created (ImportError / ModuleNotFoundError on collection).
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,7 +123,7 @@ def test_jentic_async_bridge_returns_output():
 
 @pytest.mark.unit
 def test_jentic_tool_fires_meter_event():
-    """@meter_tool fires exactly one tool event per execute() call with tool_id='jentic:news'.
+    """@meter_tool fires exactly one tool event per execute() call with tool_id=DEFAULT_CONFIG['jentic_tool_id'] (default 'jentic_news').
 
     Patches:
     - jentic.Jentic (source module) → mock client with execute returning success
@@ -159,9 +159,15 @@ def test_jentic_tool_fires_meter_event():
         assert mock_send.call_count == 1, (
             f"Expected 1 Revenium tool event, got {mock_send.call_count}"
         )
-        # tool_id must match the @meter_tool registration string
-        assert mock_send.call_args.kwargs["tool_id"] == "jentic:news", (
-            f"Expected tool_id='jentic:news', got {mock_send.call_args.kwargs.get('tool_id')!r}"
+        # tool_id must match the config value (single source of truth, L6) and
+        # must NOT contain ':' — Revenium's Tools UI rejects colons.
+        from tradingagents.default_config import DEFAULT_CONFIG
+        expected_tool_id = DEFAULT_CONFIG["jentic_tool_id"]
+        assert ":" not in expected_tool_id, (
+            f"jentic_tool_id must not contain ':' (Revenium UI rejects it), got {expected_tool_id!r}"
+        )
+        assert mock_send.call_args.kwargs["tool_id"] == expected_tool_id, (
+            f"Expected tool_id={expected_tool_id!r}, got {mock_send.call_args.kwargs.get('tool_id')!r}"
         )
         # Result must be a string (stringified output)
         assert isinstance(result, str), f"Expected str result, got {type(result)}"
