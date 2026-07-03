@@ -6,6 +6,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_stock_data,
+    get_trinigence_strategy,
     get_verified_market_snapshot,
 )
 from tradingagents.dataflows.config import get_config
@@ -20,9 +21,9 @@ def create_market_analyst(llm):
         instrument_context = get_instrument_context_from_state(state)
 
         # Build tools list at call time — read config here (not factory time) so
-        # edgehound_tool_enabled can change between runs without re-creating the analyst.
-        # get_edgehound_decision is only included when enabled so the LLM is never offered
-        # a tool that incurs metering cost when the feature is disabled (T-07-02).
+        # partner tool flags can change between runs without re-creating the analyst.
+        # Partner tools are only included when enabled so the LLM is never offered
+        # a tool that incurs metering cost when the feature is disabled (T-07-02, T-07-05).
         cfg = get_config()
         tools = [
             get_stock_data,
@@ -31,6 +32,8 @@ def create_market_analyst(llm):
         ]
         if cfg.get("edgehound_tool_enabled"):
             tools.append(get_edgehound_decision)
+        if cfg.get("trinigence_tool_enabled"):
+            tools.append(get_trinigence_strategy)
 
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:

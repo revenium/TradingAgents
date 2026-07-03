@@ -830,6 +830,17 @@ _PARTNER_TOOLS: list[dict] = [
         "price_env": "EDGEHOUND_TOOL_PRICE",
         "default_price": "0.10",
     },
+    {
+        "tool_id_key": "trinigence_tool_id",
+        "name": "Trinigence Strategy Generator",
+        "description": (
+            "Mocked NL→strategy-generation partner tool, metered+priced per-call "
+            "by Revenium (PIL-02)."
+        ),
+        "provider": "trinigence",
+        "price_env": "TRINIGENCE_TOOL_PRICE",
+        "default_price": "0.25",
+    },
 ]
 
 
