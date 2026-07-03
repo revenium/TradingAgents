@@ -21,6 +21,7 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.dataflows.config import get_config
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -167,6 +168,22 @@ class GraphSetup:
             },
         )
 
-        workflow.add_edge("Portfolio Manager", END)
+        # ── SAIF safety/assurance gate (PIL-03) ──────────────────────────────
+        # Build-time flag: read the current config and wire the SAIF gate node
+        # ONLY when saif_tool_enabled=True.  When disabled (default=False), the
+        # Portfolio Manager → END edge is kept unchanged so the existing
+        # structured-output flow and all downstream tests are unaffected (T-07-08).
+        #
+        # Lazy import keeps the heavy tradingagents package off the critical
+        # import path when saif_tool_enabled=False (the common case).
+        _cfg = get_config()
+        if _cfg.get("saif_tool_enabled"):
+            from tradingagents.agents.utils.saif_gate import create_saif_gate_node  # noqa: PLC0415
+
+            workflow.add_node("SAIF Assurance", create_saif_gate_node())
+            workflow.add_edge("Portfolio Manager", "SAIF Assurance")
+            workflow.add_edge("SAIF Assurance", END)
+        else:
+            workflow.add_edge("Portfolio Manager", END)
 
         return workflow

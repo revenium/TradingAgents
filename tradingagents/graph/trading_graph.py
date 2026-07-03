@@ -552,6 +552,9 @@ class TradingAgentsGraph:
             },
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
+            # SAIF safety/assurance gate verdict (PIL-03).
+            # Empty string when saif_tool_enabled=False (gate not wired).
+            "saif_verdict": final_state.get("saif_verdict", ""),
         }
 
         # Save to file. Reject ticker values that would escape the

@@ -74,3 +74,5 @@ class AgentState(MessagesState):
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]
+    # SAIF safety/assurance gate verdict (PIL-03). Empty string when SAIF is disabled.
+    saif_verdict: Annotated[str, "SAIF safety/assurance gate verdict on the PM decision"]

@@ -66,6 +66,9 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            # SAIF safety/assurance gate verdict (PIL-03).
+            # Empty string when saif_tool_enabled=False (gate node not wired).
+            "saif_verdict": "",
         }
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:
