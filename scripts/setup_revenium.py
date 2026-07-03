@@ -6,6 +6,10 @@ is safe: each entity is looked up by its natural key (name / email /
 product name) before creation, and existing entities are reported as
 "exists" rather than creating duplicates (D-08).
 
+Also supports registering per-call Revenium ToolResource pricing for the
+Jentic-backed news tool (JEN-02).  Run with ``--jentic-tool`` to register
+the ToolResource independently of the attribution hierarchy.
+
 SCOPING NOTE — tenantId vs teamId:
     - Organizations are TENANT-scoped (tenantId on GET query + POST body).
     - Products are TEAM-scoped (teamId in POST body; GET ?teamId=...).
@@ -16,13 +20,17 @@ Attribution values (org/product/subscriber names) are read from
 tradingagents.revenium.config (D-01..D-03).  Credentials and platform IDs
 are read from environment variables:
 
-    REVENIUM_SK_API_KEY         — rev_sk_* write/management key (required;
-                                   D-10 least-privilege split)
-    REVENIUM_TENANT_ID          — tenant scope for organizations (required)
-    REVENIUM_TEAM_ID            — team scope for products (required)
-    REVENIUM_OWNER_ID           — owner id for product creation (required)
-    REVENIUM_PLATFORM_BASE_URL  — optional; defaults to
-                                   https://api.prod.ai.hcapp.io/profitstream/v2/api
+    REVENIUM_SK_API_KEY            — rev_sk_* write/management key (required;
+                                      D-10 least-privilege split)
+    REVENIUM_TENANT_ID             — tenant scope for organizations (required)
+    REVENIUM_TEAM_ID               — team scope for products (required)
+    REVENIUM_OWNER_ID              — owner id for product creation (required)
+    REVENIUM_PLATFORM_BASE_URL     — optional; defaults to
+                                      https://api.prod.ai.hcapp.io/profitstream/v2/api
+    REVENIUM_PROFITSTREAM_BASE_URL — optional; HOST-ONLY form used for tool pricing;
+                                      defaults to the revenium_profitstream_url config
+                                      key (https://api.revenium.io by default).
+                                      For live runs use: https://api.prod.ai.hcapp.io
 
 NOTE on host/path split:
     The Revenium **management** API (org/subscriber/product/subscription CRUD)
@@ -31,7 +39,10 @@ NOTE on host/path split:
         Management host:  https://api.prod.ai.hcapp.io/profitstream/v2/api
         Metering host:    https://api.revenium.ai  (used by Plan 02, untouched here)
 
-    Auth for the management API uses the ``x-api-key`` header, NOT Bearer.
+    The Tools API for ToolResource pricing uses the profitstream host (host-only):
+        Tools host:       https://api.prod.ai.hcapp.io → /profitstream/v2/api/tools
+
+    Auth for all management/tools APIs uses the ``x-api-key`` header, NOT Bearer.
 
 Usage:
     # Dry run — print intended actions, exit 0, no writes:
@@ -41,6 +52,11 @@ Usage:
     # Live run — create/verify hierarchy in Revenium account:
     REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TENANT_ID=... REVENIUM_TEAM_ID=... \\
     REVENIUM_OWNER_ID=... .venv/bin/python scripts/setup_revenium.py
+
+    # Register Jentic tool pricing (standalone — TENANT_ID and OWNER_ID not needed):
+    REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=... \\
+    REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\
+        .venv/bin/python scripts/setup_revenium.py --jentic-tool
 
     # With an override base URL (staging):
     REVENIUM_PLATFORM_BASE_URL=https://staging.hcapp.io/profitstream/v2/api \\
@@ -56,7 +72,7 @@ Security:
 Idempotency invariant:
     Re-running the live script reports each entity as "exists" rather than
     creating duplicates.  Lookup is by natural key (org name / subscriber
-    email / product name).
+    email / product name / toolId).
 """
 
 from __future__ import annotations
@@ -609,6 +625,144 @@ def _setup_cost_rule(base_url: str, sk_key: str, team_id: str, dry_run: bool) ->
 
 
 # ---------------------------------------------------------------------------
+# Jentic tool-pricing registration (JEN-02)
+# ---------------------------------------------------------------------------
+
+# Default per-call price for the Jentic news tool (USD); override via JENTIC_TOOL_PRICE env var.
+_DEFAULT_JENTIC_UNIT_PRICE = "0.05"
+
+
+def register_jentic_tool(
+    profitstream_host: str,
+    sk_key: str,
+    team_id: str,
+    tool_id: str,
+    unit_price: str,
+    dry_run: bool,
+) -> bool:
+    """Register a per-call priced ToolResource for the Jentic news tool (JEN-02).
+
+    POSTs to ``{profitstream_host}/profitstream/v2/api/tools`` with a COUNT
+    pricing element so every emitted ``jentic:news`` tool event accrues a per-call
+    cost in Revenium.  The ``toolId`` MUST exactly match the string emitted by
+    ``@meter_tool`` in ``jentic_news_tools.py`` (``jentic_tool_id`` config key, L6).
+
+    Host note: ``profitstream_host`` must be the HOST-ONLY form, e.g.
+    ``https://api.prod.ai.hcapp.io``.  The path ``/profitstream/v2/api/tools``
+    is appended by this function.  This is the same host confirmed for billing
+    (Pitfall 6 — do not pass a host that already includes ``/profitstream``).
+    If the primary host 401/404s, the printed hint suggests the OAS server
+    ``https://api.revenium.ai`` as an alternative (T-06-05).
+
+    Idempotency: 409 Conflict (or a response body containing "already exists")
+    is treated as success — re-running is safe.
+
+    Arguments:
+        profitstream_host  HOST-ONLY URL (e.g. https://api.prod.ai.hcapp.io)
+                           from ``REVENIUM_PROFITSTREAM_BASE_URL`` /
+                           ``revenium_profitstream_url`` config key.
+        sk_key             ``rev_sk_*`` write-scope key.  If empty, print skip
+                           and return True (keyless-CI-safe, DMO-04 discipline).
+        team_id            Revenium team UUID for ToolResource scoping.
+        tool_id            ``ToolResource.toolId`` — must equal the ``@meter_tool``
+                           string, sourced from ``jentic_tool_id`` config key.
+        unit_price         Per-call price as decimal string, e.g. ``"0.05"`` = $0.05/call.
+        dry_run            If True, print intended action and return True without
+                           making any network call.
+    """
+    print(f"  Jentic tool resource: toolId='{tool_id}' (COUNT ${unit_price}/call)")
+
+    if not sk_key:
+        # Keyless mode — skip gracefully, never error (DMO-04).
+        print("    SKIP: REVENIUM_SK_API_KEY not set — skipping Jentic tool registration (keyless mode).")
+        return True
+
+    tools_url = f"{profitstream_host.rstrip('/')}/profitstream/v2/api/tools"
+
+    if dry_run:
+        print(f"    [dry-run] Would POST {tools_url}")
+        print(f"    [dry-run] toolId={tool_id}, teamId={team_id[:8]}..., "
+              f"aggregationType=COUNT, unitPrice={unit_price}")
+        print("    [dry-run] toolType=CUSTOM, toolProvider=jentic, enabled=true")
+        return True
+
+    payload: dict = {
+        "teamId": team_id,
+        "toolId": tool_id,               # must equal @meter_tool string (L6)
+        "name": "Jentic News Tool",
+        "description": (
+            "External news data via Jentic tool-execution SDK. "
+            "Metered per-call by Revenium (Phase 6, JEN-02). "
+            "toolId must match the @meter_tool decorator string."
+        ),
+        "toolType": "CUSTOM",            # enum: MCP_SERVER | MULTIMODAL | TOOL_CALL | CUSTOM
+        "toolProvider": "jentic",
+        "enabled": True,
+        "pricing": {
+            "currency": "USD",
+            "elements": [
+                {
+                    "name": "requests",
+                    "unitPrice": unit_price,        # per-call flat fee (string decimal)
+                    "aggregationType": "COUNT",     # counts events, not SUM/AVERAGE
+                }
+            ],
+        },
+    }
+
+    try:
+        resp = requests.post(
+            tools_url,
+            headers=_headers(sk_key),
+            json=payload,
+            timeout=15,
+        )
+
+        if resp.status_code in (200, 201):
+            result: dict = resp.json() if resp.text.strip() else {}
+            resource_id = result.get("id", "n/a") if isinstance(result, dict) else "n/a"
+            print(f"    created (id={resource_id}, toolId={tool_id})")
+            return True
+
+        if resp.status_code == 409:
+            # Already exists — idempotent; treat as success.
+            print(f"    already exists (toolId={tool_id}) — OK")
+            return True
+
+        # Check if body text suggests duplicate / already exists.
+        body_lower = resp.text[:500].lower()
+        if resp.status_code in (400, 422) and ("already" in body_lower or "exists" in body_lower
+                                                or "duplicate" in body_lower or "conflict" in body_lower):
+            print(f"    already exists (HTTP {resp.status_code}, body indicates duplicate) — OK")
+            return True
+
+        # 401 / 404 — likely a host mismatch; provide the alternate-host hint (T-06-05).
+        if resp.status_code in (401, 403, 404):
+            print(f"    FAIL [Jentic tool register] HTTP {resp.status_code}: {resp.text[:200]}")
+            if resp.status_code in (401, 403):
+                print("    Check that REVENIUM_SK_API_KEY is a valid rev_sk_* write-scope key.")
+            print(f"    Host tried: {tools_url}")
+            print("    Hint (T-06-05): if the primary host 401/404s, try the OAS server:")
+            print("      export REVENIUM_PROFITSTREAM_BASE_URL=https://api.revenium.ai")
+            print("      Which builds: https://api.revenium.ai/profitstream/v2/api/tools")
+            print("    Or confirm via Revenium dashboard -> Tools -> Add Tool (manual fallback).")
+            return False
+
+        resp.raise_for_status()
+        return True  # should not reach here; raise_for_status handles remaining 4xx/5xx
+
+    except requests.HTTPError as exc:
+        _handle_http_error("Jentic tool register", exc)
+        if exc.response is not None and exc.response.status_code in (401, 403, 404):
+            print(f"    Host tried: {tools_url}")
+            print("    Hint (T-06-05): try REVENIUM_PROFITSTREAM_BASE_URL=https://api.revenium.ai")
+        return False
+    except Exception as exc:  # noqa: BLE001 — fail open; report verbatim
+        print(f"    FAIL [Jentic tool register] unexpected error: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -623,7 +777,79 @@ def main() -> int:
         action="store_true",
         help="Print intended actions without making any writes to Revenium",
     )
+    parser.add_argument(
+        "--jentic-tool",
+        action="store_true",
+        help=(
+            "Register the Jentic news tool with per-call COUNT pricing in Revenium "
+            "(POST /v2/api/tools).  Runs independently of the attribution-hierarchy "
+            "steps — only REVENIUM_SK_API_KEY and REVENIUM_TEAM_ID are required.  "
+            "If REVENIUM_SK_API_KEY is absent, prints a skip message and exits 0 "
+            "(keyless-CI-safe, DMO-04).  Use REVENIUM_PROFITSTREAM_BASE_URL to "
+            "select the host (HOST-ONLY form, e.g. https://api.prod.ai.hcapp.io)."
+        ),
+    )
     args = parser.parse_args()
+
+    # ------------------------------------------------------------------
+    # --jentic-tool standalone mode (JEN-02)
+    # ------------------------------------------------------------------
+    if args.jentic_tool:
+        sk_key: str = os.getenv("REVENIUM_SK_API_KEY", "")
+        if not sk_key:
+            print("SKIP: REVENIUM_SK_API_KEY not set — jentic tool registration skipped (keyless mode).")
+            print("      To register: REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=<id> \\")
+            print("        REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\")
+            print("        .venv/bin/python scripts/setup_revenium.py --jentic-tool")
+            return 0
+
+        _validate_sk_key(sk_key)  # exits 1 on wrong prefix (never prints key value)
+
+        team_id: str = os.getenv("REVENIUM_TEAM_ID", "")
+        if not team_id:
+            print("FAIL: REVENIUM_TEAM_ID is not set.")
+            print("      Required as teamId in the ToolResource POST body.")
+            print("      Find it in: Revenium dashboard -> Settings -> Team.")
+            return 1
+
+        # Profitstream host — HOST-ONLY (path is appended by register_jentic_tool).
+        # Prefer REVENIUM_PROFITSTREAM_BASE_URL; fall back to DEFAULT_CONFIG key.
+        profitstream_host: str = (
+            os.getenv("REVENIUM_PROFITSTREAM_BASE_URL", "")
+            or DEFAULT_CONFIG.get("revenium_profitstream_url", "https://api.revenium.io")
+        ).rstrip("/")
+
+        tool_id: str = DEFAULT_CONFIG.get("jentic_tool_id", "jentic:news")
+        unit_price: str = os.getenv("JENTIC_TOOL_PRICE", _DEFAULT_JENTIC_UNIT_PRICE)
+
+        mode = "[DRY-RUN]" if args.dry_run else "[LIVE]"
+        print(f"Registering Jentic tool price model  {mode}")
+        print(f"  Profitstream host : {profitstream_host}")
+        print(f"  Team ID           : {team_id}")
+        print(f"  SK API Key        : {'(set)' if sk_key else '(MISSING)'}")
+        print(f"  Tool ID           : {tool_id}")
+        print(f"  Unit price        : ${unit_price}/call (COUNT)")
+        print()
+        print("Provisioning tool resource:")
+
+        ok = register_jentic_tool(
+            profitstream_host=profitstream_host,
+            sk_key=sk_key,
+            team_id=team_id,
+            tool_id=tool_id,
+            unit_price=unit_price,
+            dry_run=args.dry_run,
+        )
+        print()
+        if args.dry_run:
+            print("Dry-run PASS: intended actions printed; no writes made.")
+            return 0
+        if ok:
+            print("Jentic tool PASS: ToolResource registered (or already exists).")
+            print("Next step: run validate_jentic.py to confirm metered+priced events appear.")
+            return 0
+        print("Jentic tool FAIL: see error above.")
+        return 1
 
     # Resolve platform management base URL — NOT the metering URL (revenium_api_url).
     # The two hosts are intentionally separate; this script never touches the metering host.
