@@ -7,7 +7,7 @@ name = "tradingagents"
 version = "0.2.5"
 description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "langchain-core>=0.3.81",
     "backtrader>=1.9.78.123",
@@ -33,6 +33,7 @@ dependencies = [
     "yfinance>=1.4.1",
     "revenium-python-sdk[langchain]>=0.1.9",
     "revenium-metering>=6.8.2",
+    "jentic>=0.10.0,<1.0",
 ]
 
 [project.optional-dependencies]
