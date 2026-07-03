@@ -44,6 +44,9 @@ _ENV_OVERRIDES = {
     # Edgehound decision-intelligence tool (Phase 7, PIL-01)
     "EDGEHOUND_TOOL_ENABLED": "edgehound_tool_enabled",
     "EDGEHOUND_TOOL_ID":      "edgehound_tool_id",
+    # Trinigence NL→strategy-generation tool (Phase 7, PIL-02)
+    "TRINIGENCE_TOOL_ENABLED": "trinigence_tool_enabled",
+    "TRINIGENCE_TOOL_ID":      "trinigence_tool_id",
 }
 
 
@@ -246,4 +249,14 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # contain ':' (Revenium UI rejects colons). Single source of truth (L6) —
     # never hardcode in tool code; @meter_tool reads it from here.
     "edgehound_tool_id":             os.getenv("EDGEHOUND_TOOL_ID", "edgehound_decision"),
+    # ── Trinigence NL→strategy-generation tool (Phase 7, PIL-02) ───────────────
+    # trinigence_tool_enabled: master switch for the Trinigence mock tool. Must be
+    # a bool literal so _coerce converts TRINIGENCE_TOOL_ENABLED="true"/"1" correctly.
+    # When False, the LLM is not offered the tool (gated in market_analyst).
+    # The tool itself is a fully local mock — no network, no API key required.
+    "trinigence_tool_enabled":       False,
+    # Stable toolId for the Trinigence strategy-generation tool event. Must NOT
+    # contain ':' (Revenium UI rejects colons). Single source of truth (L6) —
+    # never hardcode in tool code; @meter_tool reads it from here.
+    "trinigence_tool_id":            os.getenv("TRINIGENCE_TOOL_ID", "trinigence_strategy"),
 })
