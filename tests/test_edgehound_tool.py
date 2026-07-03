@@ -4,7 +4,7 @@ All tests are @pytest.mark.unit and pass without any API keys or network
 access.  Unlike Jentic, Edgehound is a fully local mock — no external
 dependency means no sentinel branch is needed when the tool is called directly.
 The LLM-level gating (only offering the tool when edgehound_tool_enabled=True)
-is tested in Task 2 (market_analyst wiring).
+is tested in Task 2 (market_analyst wiring tests below).
 
 Coverage:
 - PIL-01: edgehound_tool_id is colon-free; sourced from DEFAULT_CONFIG single source.
@@ -152,3 +152,87 @@ def test_edgehound_reexport_from_agent_utils():
     from tradingagents.agents.utils.agent_utils import get_edgehound_decision  # noqa: F401
 
     assert get_edgehound_decision is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Market analyst wiring tests (PIL-01 T-07-02 gate)
+# ---------------------------------------------------------------------------
+
+
+def _get_market_analyst_tools(edgehound_enabled: bool) -> list:
+    """Helper: create a market analyst node and extract its tool list.
+
+    Uses a fake LLM that captures the tools passed to bind_tools so we can
+    inspect them without making any API calls.
+    """
+    from tradingagents.agents.analysts.market_analyst import create_market_analyst
+    from tradingagents.dataflows.config import get_config, set_config
+
+    captured_tools: list = []
+
+    class _FakeLLM:
+        """Minimal LLM stand-in: captures bind_tools invocation."""
+
+        def bind_tools(self, tools):
+            captured_tools.extend(tools)
+            return self
+
+        def __or__(self, other):
+            return self
+
+        def __ror__(self, other):
+            return self
+
+    orig = get_config()
+    set_config({"edgehound_tool_enabled": edgehound_enabled})
+    try:
+        fake_llm = _FakeLLM()
+        analyst_node = create_market_analyst(fake_llm)
+
+        # Build a minimal state that lets the node proceed far enough to
+        # call llm.bind_tools — we don't need the full invoke to complete.
+        from unittest.mock import MagicMock, patch
+
+        # Patch prompt.partial and chain.invoke so we don't need a real LLM
+        with patch("langchain_core.prompts.ChatPromptTemplate.from_messages") as mock_pt:
+            mock_prompt = MagicMock()
+            mock_prompt.partial.return_value = mock_prompt
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = MagicMock(tool_calls=[], content="report")
+            mock_prompt.__or__ = lambda s, o: mock_chain
+            mock_pt.return_value = mock_prompt
+
+            analyst_node({
+                "trade_date": "2025-01-01",
+                "messages": [],
+                "company_of_interest": "NVDA",
+                "asset_type": "stock",
+            })
+    finally:
+        set_config(orig)
+
+    return captured_tools
+
+
+@pytest.mark.unit
+def test_market_analyst_excludes_edgehound_when_disabled():
+    """edgehound_tool_enabled=False → get_edgehound_decision NOT in market analyst tools (T-07-02)."""
+    from tradingagents.agents.utils.agent_utils import get_edgehound_decision
+
+    tools = _get_market_analyst_tools(edgehound_enabled=False)
+    tool_names = [getattr(t, "name", str(t)) for t in tools]
+    assert get_edgehound_decision.name not in tool_names, (
+        f"get_edgehound_decision must not be in tools when disabled; got tools: {tool_names}"
+    )
+
+
+@pytest.mark.unit
+def test_market_analyst_includes_edgehound_when_enabled():
+    """edgehound_tool_enabled=True → get_edgehound_decision IS in market analyst tools (T-07-02)."""
+    from tradingagents.agents.utils.agent_utils import get_edgehound_decision
+
+    tools = _get_market_analyst_tools(edgehound_enabled=True)
+    tool_names = [getattr(t, "name", str(t)) for t in tools]
+    assert get_edgehound_decision.name in tool_names, (
+        f"get_edgehound_decision must be in tools when enabled; got tools: {tool_names}"
+    )

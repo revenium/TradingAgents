@@ -812,6 +812,137 @@ def register_jentic_tool(
 
 
 # ---------------------------------------------------------------------------
+# Partner tool registry (Phase 7, PIL-01..PIL-03)
+# ---------------------------------------------------------------------------
+# Each entry describes one pilot-partner ToolResource. The toolId is resolved
+# from DEFAULT_CONFIG[tool_id_key] at registration time — never hardcoded here
+# (T-07-01 / CLAUDE.md no-hardcoding rule). Add new partner entries to this
+# list; no other code changes required.
+_PARTNER_TOOLS: list[dict] = [
+    {
+        "tool_id_key": "edgehound_tool_id",
+        "name": "Edgehound Decision Intelligence",
+        "description": (
+            "Mocked decision-intelligence partner tool (thesis/entry-exit/conviction), "
+            "metered+priced per-call by Revenium (PIL-01)."
+        ),
+        "provider": "edgehound",
+        "price_env": "EDGEHOUND_TOOL_PRICE",
+        "default_price": "0.10",
+    },
+]
+
+
+def register_partner_tool(
+    profitstream_host: str,
+    sk_key: str,
+    team_id: str,
+    tool_id: str,
+    name: str,
+    description: str,
+    provider: str,
+    unit_price: str,
+    dry_run: bool,
+) -> bool:
+    """Register a per-call priced ToolResource for a pilot-partner tool (PIL-01..PIL-03).
+
+    Reuses the same POST-then-upsert-via-PUT path as ``register_jentic_tool``
+    (``_update_tool_pricing``) so re-running the script is idempotent.
+
+    Arguments:
+        profitstream_host  HOST-ONLY URL (e.g. https://api.prod.ai.hcapp.io).
+                           The path ``/profitstream/v2/api/tools`` is appended.
+        sk_key             ``rev_sk_*`` write-scope key.  Empty → skip gracefully,
+                           never error (DMO-04 discipline).
+        team_id            Revenium team UUID for ToolResource scoping.
+        tool_id            ``ToolResource.toolId`` — must equal the ``@meter_tool``
+                           string, sourced from DEFAULT_CONFIG at call time (L6).
+        name               Human-readable ToolResource name.
+        description        ToolResource description shown in Revenium UI.
+        provider           Tool provider string (toolProvider field).
+        unit_price         Per-call price as decimal string, e.g. ``"0.10"`` = $0.10/call.
+        dry_run            If True, print intended action and return True without
+                           making any network call.
+    """
+    print(f"  Partner tool resource: toolId='{tool_id}' (COUNT ${unit_price}/call, provider={provider})")
+
+    if not sk_key:
+        # Keyless mode — skip gracefully, never error (DMO-04).
+        print(f"    SKIP: REVENIUM_SK_API_KEY not set — skipping {name} registration (keyless mode).")
+        return True
+
+    tools_url = f"{profitstream_host.rstrip('/')}/profitstream/v2/api/tools"
+
+    if dry_run:
+        print(f"    [dry-run] Would POST {tools_url}")
+        print(f"    [dry-run] toolId={tool_id}, teamId={team_id[:8]}..., "
+              f"aggregationType=COUNT, unitPrice={unit_price}")
+        print(f"    [dry-run] toolType=CUSTOM, toolProvider={provider}, enabled=true")
+        return True
+
+    payload: dict = {
+        "teamId": team_id,
+        "toolId": tool_id,               # must equal @meter_tool string (L6)
+        "name": name,
+        "description": description,
+        "toolType": "CUSTOM",            # enum: MCP_SERVER | MULTIMODAL | TOOL_CALL | CUSTOM
+        "toolProvider": provider,
+        "enabled": True,
+        "pricing": {
+            "currency": "USD",
+            "elements": [
+                {
+                    "name": "requests",
+                    "unitPrice": unit_price,        # per-call flat fee (string decimal)
+                    "aggregationType": "COUNT",     # counts events, not SUM/AVERAGE
+                }
+            ],
+        },
+    }
+
+    try:
+        resp = requests.post(
+            tools_url,
+            headers=_headers(sk_key),
+            json=payload,
+            timeout=15,
+        )
+
+        if resp.status_code in (200, 201):
+            result: dict = resp.json() if resp.text.strip() else {}
+            resource_id = result.get("id", "n/a") if isinstance(result, dict) else "n/a"
+            print(f"    created (id={resource_id}, toolId={tool_id})")
+            return True
+
+        body_lower = resp.text[:500].lower()
+        _is_duplicate = resp.status_code == 409 or (
+            resp.status_code in (400, 422)
+            and any(w in body_lower for w in ("already", "exists", "duplicate", "conflict"))
+        )
+        if _is_duplicate:
+            # Already exists — upsert pricing in place (same pattern as Jentic, backend gap).
+            print(f"    already exists (toolId={tool_id}) — updating pricing via PUT")
+            return _update_tool_pricing(profitstream_host, sk_key, team_id, tool_id, payload)
+
+        if resp.status_code in (401, 403, 404):
+            print(f"    FAIL [{name} register] HTTP {resp.status_code}: {resp.text[:200]}")
+            if resp.status_code in (401, 403):
+                print("    Check that REVENIUM_SK_API_KEY is a valid rev_sk_* write-scope key.")
+            print(f"    Host tried: {tools_url}")
+            return False
+
+        resp.raise_for_status()
+        return True
+
+    except requests.HTTPError as exc:
+        _handle_http_error(f"{name} register", exc)
+        return False
+    except Exception as exc:  # noqa: BLE001 — fail open; report verbatim
+        print(f"    FAIL [{name} register] unexpected error: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -836,6 +967,19 @@ def main() -> int:
             "If REVENIUM_SK_API_KEY is absent, prints a skip message and exits 0 "
             "(keyless-CI-safe, DMO-04).  Use REVENIUM_PROFITSTREAM_BASE_URL to "
             "select the host (HOST-ONLY form, e.g. https://api.prod.ai.hcapp.io)."
+        ),
+    )
+    parser.add_argument(
+        "--partner-tools",
+        action="store_true",
+        help=(
+            "Register all pilot-partner tools (_PARTNER_TOOLS registry) with per-call "
+            "COUNT pricing in Revenium.  Runs independently of the attribution-hierarchy "
+            "steps — only REVENIUM_SK_API_KEY and REVENIUM_TEAM_ID are required.  "
+            "If REVENIUM_SK_API_KEY is absent, prints a skip message and exits 0 "
+            "(keyless-CI-safe, DMO-04).  Use REVENIUM_PROFITSTREAM_BASE_URL to "
+            "select the host (HOST-ONLY form, e.g. https://api.prod.ai.hcapp.io).  "
+            "Currently registers: edgehound_decision (PIL-01)."
         ),
     )
     args = parser.parse_args()
@@ -898,6 +1042,76 @@ def main() -> int:
             print("Next step: run validate_jentic.py to confirm metered+priced events appear.")
             return 0
         print("Jentic tool FAIL: see error above.")
+        return 1
+
+    # ------------------------------------------------------------------
+    # --partner-tools standalone mode (PIL-01..PIL-03)
+    # ------------------------------------------------------------------
+    if args.partner_tools:
+        sk_key: str = os.getenv("REVENIUM_SK_API_KEY", "")
+
+        # Dry-run does not require a key — it prints intended actions only
+        # and register_partner_tool handles the keyless-skip internally.
+        # Live mode requires and validates the key first.
+        if not args.dry_run:
+            if not sk_key:
+                print("SKIP: REVENIUM_SK_API_KEY not set — partner tool registration skipped (keyless mode).")
+                print("      To register: REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=<id> \\")
+                print("        REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\")
+                print("        .venv/bin/python scripts/setup_revenium.py --partner-tools")
+                return 0
+            _validate_sk_key(sk_key)  # exits 1 on wrong prefix (never prints key value)
+
+        team_id: str = os.getenv("REVENIUM_TEAM_ID", "")
+        if not team_id and not args.dry_run:
+            print("FAIL: REVENIUM_TEAM_ID is not set.")
+            print("      Required as teamId in the ToolResource POST body.")
+            print("      Find it in: Revenium dashboard -> Settings -> Team.")
+            return 1
+        if not team_id:
+            team_id = "dry-run-team-id"  # placeholder for dry-run output only
+
+        # Profitstream host — HOST-ONLY (path is appended by register_partner_tool).
+        profitstream_host: str = (
+            os.getenv("REVENIUM_PROFITSTREAM_BASE_URL", "")
+            or DEFAULT_CONFIG.get("revenium_profitstream_url", "https://api.revenium.io")
+        ).rstrip("/")
+
+        mode = "[DRY-RUN]" if args.dry_run else "[LIVE]"
+        print(f"Registering partner tool price models  {mode}")
+        print(f"  Profitstream host : {profitstream_host}")
+        print(f"  Team ID           : {team_id}")
+        print(f"  SK API Key        : {'(set)' if sk_key else '(MISSING)'}")
+        print(f"  Partners          : {', '.join(e['provider'] for e in _PARTNER_TOOLS)}")
+        print()
+        print("Provisioning tool resources:")
+
+        all_ok = True
+        for entry in _PARTNER_TOOLS:
+            tool_id: str = DEFAULT_CONFIG.get(entry["tool_id_key"], entry["tool_id_key"])
+            unit_price: str = os.getenv(entry["price_env"], entry["default_price"])
+            ok = register_partner_tool(
+                profitstream_host=profitstream_host,
+                sk_key=sk_key,
+                team_id=team_id,
+                tool_id=tool_id,
+                name=entry["name"],
+                description=entry["description"],
+                provider=entry["provider"],
+                unit_price=unit_price,
+                dry_run=args.dry_run,
+            )
+            if not ok:
+                all_ok = False
+
+        print()
+        if args.dry_run:
+            print("Dry-run PASS: intended actions printed; no writes made.")
+            return 0
+        if all_ok:
+            print("Partner tools PASS: all ToolResources registered (or already exist).")
+            return 0
+        print("Partner tools FAIL: one or more registrations failed (see above).")
         return 1
 
     # Resolve platform management base URL — NOT the metering URL (revenium_api_url).
