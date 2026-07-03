@@ -25,10 +25,9 @@ Design notes
 
 from __future__ import annotations
 
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Sample PM decision markdown for the SAIF gate call
@@ -157,3 +156,88 @@ def test_all_partner_tool_ids_colon_free_from_config():
             f"DEFAULT_CONFIG[{key!r}] must not contain ':'; got {tool_id!r} "
             f"(Revenium UI validation rejects colons)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 3: partner tools are registered in the EXECUTABLE market ToolNode (CR-01)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_market_tool_node_executable_set_matches_bound_partner_tools():
+    """The market ToolNode's executable tool set includes the partner tools when enabled.
+
+    Guards against the CR-01 regression: create_market_analyst binds the partner
+    tools to the LLM, but if TradingAgentsGraph._create_tool_nodes builds the market
+    ToolNode without them, a real graph run cannot dispatch the LLM's tool call —
+    LangGraph returns a ToolMessage error and @meter_tool never fires. The executable
+    set (ToolNode.tools_by_name) MUST mirror the advertised (bound) set. This drives
+    the ACTUAL _create_tool_nodes wiring (it only reads self.config) rather than a
+    .func() shortcut.
+    """
+    from types import SimpleNamespace
+
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    # Enabled: both partner tools must be executable through the market ToolNode.
+    stub_on = SimpleNamespace(config={
+        "edgehound_tool_enabled": True,
+        "trinigence_tool_enabled": True,
+    })
+    market_on = TradingAgentsGraph._create_tool_nodes(stub_on)["market"]
+    names_on = set(market_on.tool_node.tools_by_name)
+    assert "get_edgehound_decision" in names_on, (
+        "Edgehound bound to the LLM but NOT executable in the market ToolNode (CR-01)"
+    )
+    assert "get_trinigence_strategy" in names_on, (
+        "Trinigence bound to the LLM but NOT executable in the market ToolNode (CR-01)"
+    )
+
+    # Disabled (default): partner tools must NOT be in the executable set — mirrors
+    # the LLM binding gate so a disabled tool is neither advertised nor dispatchable.
+    stub_off = SimpleNamespace(config={})
+    market_off = TradingAgentsGraph._create_tool_nodes(stub_off)["market"]
+    names_off = set(market_off.tool_node.tools_by_name)
+    assert "get_edgehound_decision" not in names_off
+    assert "get_trinigence_strategy" not in names_off
+
+
+# ---------------------------------------------------------------------------
+# Test 4: the market ToolNode re-sets per-agent attribution before dispatch (WR-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_attributed_tool_node_sets_agent_name_before_dispatch():
+    """The attribution wrapper sets current_agent_name='market_analyst' before dispatch.
+
+    Guards against the WR-03 regression: LangGraph runs each node in its own
+    copy_context().run(), so current_agent_name set inside the analyst node does NOT
+    reach the sibling market ToolNode — partner tool events would attribute to the
+    "unknown" default. The wrapper must re-set the contextvar in the ToolNode's own
+    context immediately before dispatch, so @meter_tool reads "market_analyst". A spy
+    records the contextvar value at dispatch time.
+    """
+    from tradingagents.graph.trading_graph import _attributed_tool_node
+    from tradingagents.revenium.context import current_agent_name
+
+    seen = {}
+
+    class _SpyToolNode:
+        def invoke(self, state, config=None):
+            seen["agent"] = current_agent_name.get()
+            return {"messages": []}
+
+    wrapped = _attributed_tool_node(_SpyToolNode(), "market_analyst")
+
+    # Start from the "unknown" default so a passing assertion proves the wrapper set it.
+    token = current_agent_name.set("unknown")
+    try:
+        wrapped({"messages": []})
+    finally:
+        current_agent_name.reset(token)
+
+    assert seen["agent"] == "market_analyst", (
+        f"ToolNode dispatched with agent={seen.get('agent')!r}; expected "
+        f"'market_analyst' (WR-03 contextvar-isolation regression)"
+    )

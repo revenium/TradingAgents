@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_balance_sheet,
     get_cashflow,
+    get_edgehound_decision,
     get_fundamentals,
     get_global_news,
     get_income_statement,
@@ -25,6 +27,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
     get_stock_data,
+    get_trinigence_strategy,
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
@@ -35,7 +38,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.revenium.billing import TradingSignalBillingEmitter
 from tradingagents.revenium.callback import ReveniumCallbackHandler
-from tradingagents.revenium.context import revenium_run_context
+from tradingagents.revenium.context import current_agent_name, revenium_run_context
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -45,6 +48,29 @@ from .setup import GraphSetup
 from .signal_processing import SignalProcessor
 
 logger = logging.getLogger(__name__)
+
+
+def _attributed_tool_node(tool_node: ToolNode, agent_name: str) -> Callable:
+    """Wrap a ToolNode so @meter_tool events fire with correct per-agent attribution.
+
+    LangGraph executes every node inside its own ``copy_context().run()``, so the
+    ``current_agent_name`` set inside an analyst node does NOT propagate into the
+    sibling ToolNode's context — tool events emitted from inside the ToolNode
+    (e.g. the Phase 7 partner tools) would otherwise attribute to the default
+    "unknown" agent, breaking the per-agent cost view (Phase 7 WR-03). Re-setting
+    the contextvar here — in the ToolNode's own node context and immediately
+    before dispatch — restores correct attribution; the value is captured by the
+    tool executor's context copy.
+    """
+
+    def node(state: Any, config: Any = None) -> Any:
+        current_agent_name.set(agent_name)
+        return tool_node.invoke(state, config)
+
+    # Expose the wrapped ToolNode so callers/tests can introspect the executable
+    # tool set (the advertised-vs-executable invariant behind CR-01).
+    node.tool_node = tool_node
+    return node
 
 
 class TradingAgentsGraph:
@@ -199,21 +225,35 @@ class TradingAgentsGraph:
 
         return kwargs
 
-    def _create_tool_nodes(self) -> dict[str, ToolNode]:
+    def _create_tool_nodes(self) -> dict[str, Any]:
         """Create tool nodes for different data sources using abstract methods."""
+        # Core market tools always available to the market analyst.
+        market_tools = [
+            # Core stock data tools
+            get_stock_data,
+            # Technical indicators
+            get_indicators,
+            # Deterministic verification snapshot (bound to the analyst
+            # LLM and required by its prompt; must be executable here or
+            # the call fails and the model reports it "unavailable").
+            get_verified_market_snapshot,
+        ]
+        # Phase 7 partner tools are conditionally bound to the market-analyst LLM
+        # in create_market_analyst (gated on these same flags). The executable
+        # ToolNode set MUST mirror that bound set — otherwise the LLM's tool call
+        # dispatches to a node with no matching handler, LangGraph returns a
+        # ToolMessage error, and the tool body (with its @meter_tool event) never
+        # runs. Keep advertised == executable so the metered partner event fires
+        # on a real graph run (Phase 7 CR-01).
+        if self.config.get("edgehound_tool_enabled"):
+            market_tools.append(get_edgehound_decision)
+        if self.config.get("trinigence_tool_enabled"):
+            market_tools.append(get_trinigence_strategy)
+
         return {
-            "market": ToolNode(
-                [
-                    # Core stock data tools
-                    get_stock_data,
-                    # Technical indicators
-                    get_indicators,
-                    # Deterministic verification snapshot (bound to the analyst
-                    # LLM and required by its prompt; must be executable here or
-                    # the call fails and the model reports it "unavailable").
-                    get_verified_market_snapshot,
-                ]
-            ),
+            # Wrapped for per-agent attribution so partner (and core market) tool
+            # events attribute to "market_analyst" rather than "unknown" (WR-03).
+            "market": _attributed_tool_node(ToolNode(market_tools), "market_analyst"),
             "social": ToolNode(
                 [
                     # News tools for social media analysis
