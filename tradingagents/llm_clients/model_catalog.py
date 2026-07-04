@@ -218,3 +218,29 @@ def get_known_models() -> dict[str, list[str]]:
         )
         for provider, mode_options in MODEL_OPTIONS.items()
     }
+
+
+def provider_for_model(model: str, fallback: str) -> str:
+    """Resolve which provider should serve ``model``, honoring an explicit choice.
+
+    Per-role providers (``deep_think_provider`` / ``quick_think_provider``) must
+    match the per-role model, or a request is routed to the wrong API host — e.g.
+    a ``gpt-*`` deep model sent to the Anthropic ``/v1/messages`` endpoint 404s
+    with ``model: gpt-...``.
+
+    Resolution order:
+    1. If ``fallback`` (the user-selected provider) legitimately offers ``model``,
+       trust it — the user's choice is authoritative and correctly handles shared
+       ``custom`` entries and regional twins (e.g. ``qwen`` vs ``qwen-cn``).
+    2. Otherwise, if exactly ONE provider in the catalog offers ``model``, return
+       that provider (fixes a model whose provider drifted from the selection —
+       ``claude-*`` → anthropic, ``gpt-*`` → openai, ``gemini-*`` → google).
+    3. Otherwise (unknown or ambiguous, e.g. an OpenAI-compatible ``custom`` id),
+       return ``fallback`` — the selected provider's endpoint owns it.
+    """
+    fallback = (fallback or "").lower()
+    known = get_known_models()
+    if model in known.get(fallback, []):
+        return fallback
+    matches = [provider for provider, models in known.items() if model in models]
+    return matches[0] if len(matches) == 1 else fallback

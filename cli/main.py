@@ -48,6 +48,7 @@ from tradingagents.graph.analyst_execution import (
     sync_analyst_tracker_from_chunk,
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.llm_clients.model_catalog import provider_for_model
 
 console = Console()
 
@@ -1210,7 +1211,20 @@ def run_analysis(checkpoint: bool = False):
     config["quick_think_llm"] = selections["shallow_thinker"]
     config["deep_think_llm"] = selections["deep_thinker"]
     config["backend_url"] = selections["backend_url"]
-    config["llm_provider"] = selections["llm_provider"].lower()
+    selected_provider = selections["llm_provider"].lower()
+    config["llm_provider"] = selected_provider
+    # Keep each role's provider consistent with its selected model. Without this,
+    # the DEFAULT_CONFIG per-role provider defaults (anthropic deep / openai quick)
+    # would survive the copy and mis-route a model to the wrong API host — e.g. a
+    # gpt-* deep model sent to Anthropic 404s ("model: gpt-..."). provider_for_model
+    # trusts the selected provider when it offers the model, so the multi-provider
+    # default (claude deep + gpt quick) is preserved when models are left at default.
+    config["deep_think_provider"] = provider_for_model(
+        selections["deep_thinker"], selected_provider
+    )
+    config["quick_think_provider"] = provider_for_model(
+        selections["shallow_thinker"], selected_provider
+    )
     # Provider-specific thinking configuration
     config["google_thinking_level"] = selections.get("google_thinking_level")
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
