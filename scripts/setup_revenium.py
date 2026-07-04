@@ -965,6 +965,131 @@ def register_partner_tool(
 
 
 # ---------------------------------------------------------------------------
+# Core data-fetch tool provider registry (Phase 7 follow-up)
+# ---------------------------------------------------------------------------
+# The core analyst data-fetch tools are @meter_tool-decorated (the "cost
+# iceberg"): their tool events auto-create ToolResources in Revenium with a
+# NULL provider. Registering a provider attributes them consistently in the
+# Tool Registry. These core tools use FIXED string toolIds in their @meter_tool
+# decorators (unlike the config-key-sourced jentic/partner tools), so the list
+# below MUST mirror the literal decorator strings in
+# tradingagents/agents/utils/*_tools.py. Excludes the three pilot partners
+# (edgehound/trinigence/saif) and jentic_news, which are registered with their
+# own providers via --partner-tools / --jentic-tool.
+_CORE_TOOL_PROVIDER = "jentic"
+_CORE_TOOL_IDS: list[str] = [
+    "get_stock_data",
+    "get_indicators",
+    "get_verified_market_snapshot",
+    "get_news",
+    "get_global_news",
+    "get_insider_transactions",
+    "get_macro_indicators",
+    "get_prediction_markets",
+    "get_fundamentals",
+    "get_balance_sheet",
+    "get_cashflow",
+    "get_income_statement",
+]
+
+
+def register_core_tool_provider(
+    profitstream_host: str,
+    sk_key: str,
+    team_id: str,
+    tool_id: str,
+    provider: str,
+    dry_run: bool,
+) -> bool:
+    """Set ``toolProvider`` on a core data-fetch ToolResource, preserving pricing.
+
+    The core tools' @meter_tool events auto-create ToolResources with a NULL
+    provider. This GETs the existing resource by toolId and PUTs it back with
+    ``toolProvider`` set — carrying over the existing name/description/pricing so
+    nothing else changes. If the tool has never emitted an event (404), a minimal
+    ToolResource is created with the provider (no pricing).
+
+    Keyless-safe: empty ``sk_key`` prints a skip and returns True (DMO-04).
+    """
+    print(f"  Core tool resource: toolId='{tool_id}' -> provider={provider}")
+
+    if not sk_key:
+        print(f"    SKIP: REVENIUM_SK_API_KEY not set — skipping {tool_id} provider update (keyless mode).")
+        return True
+
+    base = f"{profitstream_host.rstrip('/')}/profitstream/v2/api/tools"
+
+    if dry_run:
+        print(f"    [dry-run] Would GET {base}/by-tool-id/{tool_id} then PUT toolProvider={provider}")
+        return True
+
+    quoted = requests.utils.quote(tool_id, safe="")
+    try:
+        get_resp = requests.get(
+            f"{base}/by-tool-id/{quoted}",
+            headers=_headers(sk_key),
+            params={"teamId": team_id},
+            timeout=15,
+        )
+
+        if get_resp.status_code == 200:
+            existing: dict = get_resp.json() or {}
+            resource_id = existing.get("id")
+            if not resource_id:
+                print(f"    FAIL [{tool_id} provider] existing tool has no id")
+                return False
+            payload: dict = {
+                "teamId": team_id,
+                "toolId": tool_id,
+                "name": existing.get("name") or tool_id,
+                "description": existing.get("description")
+                or f"Core analyst data-fetch tool metered by Revenium ({tool_id}).",
+                "toolType": existing.get("toolType") or "CUSTOM",
+                "toolProvider": provider,
+                "enabled": existing.get("enabled", True),
+            }
+            # Preserve any existing pricing element untouched.
+            if existing.get("pricing"):
+                payload["pricing"] = existing["pricing"]
+            put_resp = requests.put(
+                f"{base}/{resource_id}",
+                headers=_headers(sk_key),
+                json=payload,
+                timeout=15,
+            )
+            if put_resp.status_code in (200, 201):
+                print(f"    updated provider (id={resource_id}, toolId={tool_id}, provider={provider})")
+                return True
+            print(f"    FAIL [{tool_id} provider] PUT HTTP {put_resp.status_code}: {put_resp.text[:200]}")
+            return False
+
+        if get_resp.status_code == 404:
+            # Never emitted yet — create a minimal provider-tagged resource (no pricing).
+            payload = {
+                "teamId": team_id,
+                "toolId": tool_id,
+                "name": tool_id,
+                "description": f"Core analyst data-fetch tool metered by Revenium ({tool_id}).",
+                "toolType": "CUSTOM",
+                "toolProvider": provider,
+                "enabled": True,
+            }
+            post_resp = requests.post(base, headers=_headers(sk_key), json=payload, timeout=15)
+            if post_resp.status_code in (200, 201):
+                print(f"    created (toolId={tool_id}, provider={provider})")
+                return True
+            print(f"    FAIL [{tool_id} provider] POST HTTP {post_resp.status_code}: {post_resp.text[:200]}")
+            return False
+
+        print(f"    FAIL [{tool_id} provider] fetch HTTP {get_resp.status_code}: {get_resp.text[:200]}")
+        return False
+
+    except Exception as exc:  # noqa: BLE001 — fail open; report verbatim
+        print(f"    FAIL [{tool_id} provider] unexpected error: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1001,7 +1126,21 @@ def main() -> int:
             "If REVENIUM_SK_API_KEY is absent, prints a skip message and exits 0 "
             "(keyless-CI-safe, DMO-04).  Use REVENIUM_PROFITSTREAM_BASE_URL to "
             "select the host (HOST-ONLY form, e.g. https://api.prod.ai.hcapp.io).  "
-            "Currently registers: edgehound_decision (PIL-01)."
+            "Registers all pilot-partner tools: edgehound_decision (PIL-01), "
+            "trinigence_strategy (PIL-02), saif_assurance (PIL-03)."
+        ),
+    )
+    parser.add_argument(
+        "--core-tools",
+        action="store_true",
+        help=(
+            "Set the ToolResource provider on the core analyst data-fetch tools "
+            "(_CORE_TOOL_IDS) so they are attributed to a provider instead of NULL "
+            "in the Revenium Tool Registry.  These tools' @meter_tool events "
+            "auto-create ToolResources with no provider; this GET-then-PUT patches "
+            f"toolProvider={_CORE_TOOL_PROVIDER!r} without altering existing pricing.  "
+            "Same env + keyless-skip contract as --partner-tools.  Composable: "
+            "pass with --partner-tools to provision both in one run."
         ),
     )
     args = parser.parse_args()
@@ -1067,20 +1206,23 @@ def main() -> int:
         return 1
 
     # ------------------------------------------------------------------
-    # --partner-tools standalone mode (PIL-01..PIL-03)
+    # --partner-tools / --core-tools standalone mode (composable)
+    #   --partner-tools : pilot-partner ToolResources w/ COUNT pricing (PIL-01..03)
+    #   --core-tools    : set toolProvider on the core data-fetch tools (no pricing change)
+    # Both share the same env + keyless contract; either or both may be requested.
     # ------------------------------------------------------------------
-    if args.partner_tools:
+    if args.partner_tools or args.core_tools:
         sk_key: str = os.getenv("REVENIUM_SK_API_KEY", "")
 
         # Dry-run does not require a key — it prints intended actions only
-        # and register_partner_tool handles the keyless-skip internally.
+        # and the register_* helpers handle the keyless-skip internally.
         # Live mode requires and validates the key first.
         if not args.dry_run:
             if not sk_key:
-                print("SKIP: REVENIUM_SK_API_KEY not set — partner tool registration skipped (keyless mode).")
+                print("SKIP: REVENIUM_SK_API_KEY not set — tool registration skipped (keyless mode).")
                 print("      To register: REVENIUM_SK_API_KEY=rev_sk_... REVENIUM_TEAM_ID=<id> \\")
                 print("        REVENIUM_PROFITSTREAM_BASE_URL=https://api.prod.ai.hcapp.io \\")
-                print("        .venv/bin/python scripts/setup_revenium.py --partner-tools")
+                print("        .venv/bin/python scripts/setup_revenium.py --partner-tools --core-tools")
                 return 0
             _validate_sk_key(sk_key)  # exits 1 on wrong prefix (never prints key value)
 
@@ -1093,47 +1235,67 @@ def main() -> int:
         if not team_id:
             team_id = "dry-run-team-id"  # placeholder for dry-run output only
 
-        # Profitstream host — HOST-ONLY (path is appended by register_partner_tool).
+        # Profitstream host — HOST-ONLY (path is appended by the register_* helpers).
         profitstream_host: str = (
             os.getenv("REVENIUM_PROFITSTREAM_BASE_URL", "")
             or DEFAULT_CONFIG.get("revenium_profitstream_url", "https://api.revenium.io")
         ).rstrip("/")
 
         mode = "[DRY-RUN]" if args.dry_run else "[LIVE]"
-        print(f"Registering partner tool price models  {mode}")
+        print(f"Registering tool resources  {mode}")
         print(f"  Profitstream host : {profitstream_host}")
         print(f"  Team ID           : {team_id}")
         print(f"  SK API Key        : {'(set)' if sk_key else '(MISSING)'}")
-        print(f"  Partners          : {', '.join(e['provider'] for e in _PARTNER_TOOLS)}")
+        if args.partner_tools:
+            print(f"  Partners          : {', '.join(e['provider'] for e in _PARTNER_TOOLS)}")
+        if args.core_tools:
+            print(f"  Core tools        : {len(_CORE_TOOL_IDS)} -> provider={_CORE_TOOL_PROVIDER}")
         print()
-        print("Provisioning tool resources:")
 
         all_ok = True
-        for entry in _PARTNER_TOOLS:
-            tool_id: str = DEFAULT_CONFIG.get(entry["tool_id_key"], entry["tool_id_key"])
-            unit_price: str = os.getenv(entry["price_env"], entry["default_price"])
-            ok = register_partner_tool(
-                profitstream_host=profitstream_host,
-                sk_key=sk_key,
-                team_id=team_id,
-                tool_id=tool_id,
-                name=entry["name"],
-                description=entry["description"],
-                provider=entry["provider"],
-                unit_price=unit_price,
-                dry_run=args.dry_run,
-            )
-            if not ok:
-                all_ok = False
 
-        print()
+        if args.partner_tools:
+            print("Provisioning partner tool resources (COUNT pricing):")
+            for entry in _PARTNER_TOOLS:
+                tool_id: str = DEFAULT_CONFIG.get(entry["tool_id_key"], entry["tool_id_key"])
+                unit_price: str = os.getenv(entry["price_env"], entry["default_price"])
+                ok = register_partner_tool(
+                    profitstream_host=profitstream_host,
+                    sk_key=sk_key,
+                    team_id=team_id,
+                    tool_id=tool_id,
+                    name=entry["name"],
+                    description=entry["description"],
+                    provider=entry["provider"],
+                    unit_price=unit_price,
+                    dry_run=args.dry_run,
+                )
+                if not ok:
+                    all_ok = False
+            print()
+
+        if args.core_tools:
+            print(f"Setting provider={_CORE_TOOL_PROVIDER} on core data-fetch tools:")
+            for core_tool_id in _CORE_TOOL_IDS:
+                ok = register_core_tool_provider(
+                    profitstream_host=profitstream_host,
+                    sk_key=sk_key,
+                    team_id=team_id,
+                    tool_id=core_tool_id,
+                    provider=_CORE_TOOL_PROVIDER,
+                    dry_run=args.dry_run,
+                )
+                if not ok:
+                    all_ok = False
+            print()
+
         if args.dry_run:
             print("Dry-run PASS: intended actions printed; no writes made.")
             return 0
         if all_ok:
-            print("Partner tools PASS: all ToolResources registered (or already exist).")
+            print("Tool registration PASS: all ToolResources registered/updated (or already correct).")
             return 0
-        print("Partner tools FAIL: one or more registrations failed (see above).")
+        print("Tool registration FAIL: one or more registrations failed (see above).")
         return 1
 
     # Resolve platform management base URL — NOT the metering URL (revenium_api_url).
