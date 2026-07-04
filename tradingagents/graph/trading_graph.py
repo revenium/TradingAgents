@@ -23,6 +23,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_indicators,
     get_insider_transactions,
+    get_jentic_news,
     get_macro_indicators,
     get_news,
     get_prediction_markets,
@@ -67,9 +68,11 @@ def _attributed_tool_node(tool_node: ToolNode, agent_name: str) -> Callable:
         current_agent_name.set(agent_name)
         return tool_node.invoke(state, config)
 
-    # Expose the wrapped ToolNode so callers/tests can introspect the executable
-    # tool set (the advertised-vs-executable invariant behind CR-01).
+    # Expose the wrapped ToolNode + agent name so callers/tests can introspect the
+    # executable tool set (the advertised-vs-executable invariant behind CR-01) and
+    # the per-node attribution (WR-03).
     node.tool_node = tool_node
+    node.agent_name = agent_name
     return node
 
 
@@ -250,34 +253,51 @@ class TradingAgentsGraph:
         if self.config.get("trinigence_tool_enabled"):
             market_tools.append(get_trinigence_strategy)
 
+        # News-analyst tools. get_jentic_news is bound to the news analyst only
+        # when jentic_tool_enabled (news_analyst.py), so — exactly like the market
+        # partner tools (CR-01) — the executable ToolNode set must include it when
+        # enabled, or a real graph run cannot dispatch the LLM's jentic tool call
+        # and the @meter_tool event never fires.
+        news_tools = [
+            # News and insider information
+            get_news,
+            get_global_news,
+            get_insider_transactions,
+            get_macro_indicators,
+            get_prediction_markets,
+        ]
+        if self.config.get("jentic_tool_enabled"):
+            news_tools.append(get_jentic_news)
+
+        # Every tool node is attribution-wrapped so its @meter_tool events land on
+        # the analyst that triggered them instead of the "unknown" default. Each
+        # LangGraph node runs in its own copy_context().run(), so the agent name an
+        # analyst sets does NOT reach its sibling ToolNode — re-set it here, in the
+        # ToolNode's own context, right before dispatch (WR-03). Names must match
+        # the current_agent_name each analyst sets in its node.
         return {
-            # Wrapped for per-agent attribution so partner (and core market) tool
-            # events attribute to "market_analyst" rather than "unknown" (WR-03).
             "market": _attributed_tool_node(ToolNode(market_tools), "market_analyst"),
-            "social": ToolNode(
-                [
-                    # News tools for social media analysis
-                    get_news,
-                ]
+            "social": _attributed_tool_node(
+                ToolNode(
+                    [
+                        # News tools for social media / sentiment analysis
+                        get_news,
+                    ]
+                ),
+                "sentiment_analyst",
             ),
-            "news": ToolNode(
-                [
-                    # News and insider information
-                    get_news,
-                    get_global_news,
-                    get_insider_transactions,
-                    get_macro_indicators,
-                    get_prediction_markets,
-                ]
-            ),
-            "fundamentals": ToolNode(
-                [
-                    # Fundamental analysis tools
-                    get_fundamentals,
-                    get_balance_sheet,
-                    get_cashflow,
-                    get_income_statement,
-                ]
+            "news": _attributed_tool_node(ToolNode(news_tools), "news_analyst"),
+            "fundamentals": _attributed_tool_node(
+                ToolNode(
+                    [
+                        # Fundamental analysis tools
+                        get_fundamentals,
+                        get_balance_sheet,
+                        get_cashflow,
+                        get_income_statement,
+                    ]
+                ),
+                "fundamentals_analyst",
             ),
         }
 
