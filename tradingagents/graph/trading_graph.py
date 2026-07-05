@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yfinance as yf
+from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolNode
 from revenium_middleware._core import stop_polling
 
@@ -64,7 +65,7 @@ def _attributed_tool_node(tool_node: ToolNode, agent_name: str) -> Callable:
     tool executor's context copy.
     """
 
-    def node(state: Any, config: Any = None) -> Any:
+    def node(state: Any, config: RunnableConfig | None = None) -> Any:
         current_agent_name.set(agent_name)
         return tool_node.invoke(state, config)
 

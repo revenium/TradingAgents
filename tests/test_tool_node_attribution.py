@@ -52,3 +52,75 @@ def test_jentic_tool_executable_in_news_node_only_when_enabled():
         SimpleNamespace(config={"jentic_tool_enabled": True})
     )
     assert "get_jentic_news" in on["news"].tool_node.tools_by_name
+
+
+@pytest.mark.unit
+def test_tool_event_attributed_through_real_graph_execution():
+    """End-to-end proof: a tool dispatched through a compiled LangGraph attributes
+    its @meter_tool event to the analyst, NOT "unknown".
+
+    This exercises the REAL execution path — a compiled StateGraph whose ToolNode
+    runs the tool in a ContextThreadPoolExecutor worker thread — rather than a
+    unit-level wrapper call. It guards the exact symptom the platform reported:
+    tool-metering events arriving with agent="unknown". The context deliberately
+    starts at the "unknown" default so a passing assertion proves the wrapper set
+    the agent that Revenium ultimately receives (meter_tool.py reads
+    current_agent_name at emit time).
+    """
+    from unittest.mock import patch
+
+    from langchain_core.messages import AIMessage
+    from langgraph.graph import END, START, MessagesState, StateGraph
+
+    from tradingagents.dataflows.config import get_config, set_config
+    from tradingagents.revenium.context import current_agent_name
+
+    orig = get_config()
+    set_config({
+        "trinigence_tool_enabled": True,
+        "revenium_api_key": "rev_mk_test",
+        "revenium_api_url": "https://api.revenium.ai",
+        "revenium_organization_name": "org",
+        "revenium_product_name": "p",
+        "revenium_subscriber_id": "s",
+    })
+
+    market_node = TradingAgentsGraph._create_tool_nodes(
+        SimpleNamespace(config=get_config())
+    )["market"]
+
+    def emit(_state):
+        return {"messages": [AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "get_trinigence_strategy",
+                "args": {"description": "momentum"},
+                "id": "c1",
+                "type": "tool_call",
+            }],
+        )]}
+
+    sg = StateGraph(MessagesState)
+    sg.add_node("emit", emit)
+    sg.add_node("tools", market_node)
+    sg.add_edge(START, "emit")
+    sg.add_edge("emit", "tools")
+    sg.add_edge("tools", END)
+    app = sg.compile()
+
+    token = current_agent_name.set("unknown")  # the default that produced the bug
+    try:
+        with patch("revenium_metering.decorator._send_tool_event") as mock_send:
+            app.invoke({"messages": []})
+
+        assert mock_send.call_count == 1, (
+            f"expected one tool event, got {mock_send.call_count}"
+        )
+        agent = mock_send.call_args.kwargs["context"].agent
+        assert agent == "market_analyst", (
+            f"tool event emitted with agent={agent!r}; expected 'market_analyst' "
+            f"(the 'unknown' regression)"
+        )
+    finally:
+        current_agent_name.reset(token)
+        set_config(orig)
