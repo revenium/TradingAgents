@@ -1529,10 +1529,13 @@ def run_analysis(checkpoint: bool = False):
         # Reached only on a fully successful stream — a BudgetExceededError would
         # have propagated out of the Live block above (D-10: halted runs emit no
         # outcome). Emit one priced outcome for the completed signal: flat $2.00
-        # (D-07). Fail-open / no-op without a billing key.
+        # (D-07). Fail-open / no-op without a billing key. block=True waits for the
+        # outcome POST to land before the finally's stop_polling / process exit,
+        # otherwise the daemon thread is killed mid-POST and the Job stays PENDING.
         graph._billing_emitter.emit_billing_event(
             trace_id=_trace_id,
             signal_price=config.get("revenium_signal_price", 2.00),
+            block=True,
         )
     except BudgetExceededError as err:
         # Run halted by Revenium enforcement (CTL-02).

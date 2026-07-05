@@ -216,6 +216,9 @@ class TradingSignalBillingEmitter:
         trace_id: str,
         signal_price: float,
         reported_by: str = "",
+        *,
+        block: bool = False,
+        block_timeout: float = 10.0,
     ) -> None:
         """Emit a SUCCESS outcome for a completed trading signal run.
 
@@ -236,6 +239,17 @@ class TradingSignalBillingEmitter:
                           (default $2.00, D-07).  Carried as ``outcomeValue``.
             reported_by:  Subscriber identifier for attribution.  Defaults to the
                           ``subscriber_id`` set at construction time.
+            block:        When ``True``, wait (bounded by ``block_timeout``) for the
+                          outcome POST to complete before returning.  Needed on the
+                          CLI path, which emits at the very end of the run and then
+                          tears down (``stop_polling`` / process exit) — without the
+                          wait the daemon thread is killed mid-POST and the Job is
+                          left ``PENDING`` (never converts).  ``_run_graph`` leaves
+                          this ``False`` (fire-and-forget) since it does more work
+                          after emitting.
+            block_timeout: Max seconds to wait when ``block`` is ``True``; on timeout
+                          the (daemon) thread continues best-effort and control
+                          returns so the caller never hangs.
         """
         if not self.enabled:
             return
@@ -277,3 +291,8 @@ class TradingSignalBillingEmitter:
             name=f"rev-billing-outcome-{trace_id[:8]}",
         )
         t.start()
+        if block:
+            # Wait (bounded) so the outcome POST lands before the caller tears down
+            # its transport or exits the process. _report_outcome_safe is fail-open,
+            # so on timeout the thread keeps running best-effort and we return.
+            t.join(timeout=block_timeout)
