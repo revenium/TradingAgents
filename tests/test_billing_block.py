@@ -41,12 +41,14 @@ def _enabled_emitter_with_mock_client():
 
 
 @pytest.mark.unit
-def test_emit_billing_event_block_waits_for_outcome():
+def test_emit_billing_event_block_waits_and_reports_accepted():
     em, client = _enabled_emitter_with_mock_client()
 
-    em.emit_billing_event(trace_id="t1", signal_price=2.00, block=True)
+    ok = em.emit_billing_event(trace_id="t1", signal_price=2.00, block=True)
 
-    # With block=True the POST must have completed by the time emit returns.
+    # With block=True the POST must have completed by the time emit returns, and
+    # emit reports delivery success for the CLI read-back.
+    assert ok is True, "block=True must report the outcome POST was accepted"
     assert client.completed.is_set(), "block=True must wait for the outcome POST"
     assert len(client.calls) == 1
     trace_id, payload = client.calls[0]
@@ -57,12 +59,24 @@ def test_emit_billing_event_block_waits_for_outcome():
 
 
 @pytest.mark.unit
-def test_emit_billing_event_nonblock_returns_before_outcome():
+def test_emit_billing_event_block_reports_false_on_failure():
+    em, client = _enabled_emitter_with_mock_client()
+    client.report_outcome = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom"))
+
+    ok = em.emit_billing_event(trace_id="tX", signal_price=2.00, block=True)
+
+    # Fail-open: no raise, but the read-back reports the drop so the CLI can warn.
+    assert ok is False
+
+
+@pytest.mark.unit
+def test_emit_billing_event_nonblock_returns_none_before_outcome():
     em, client = _enabled_emitter_with_mock_client()
 
-    em.emit_billing_event(trace_id="t2", signal_price=2.00)  # block=False (default)
+    ok = em.emit_billing_event(trace_id="t2", signal_price=2.00)  # block=False (default)
 
-    # Fire-and-forget: emit returns before the slow POST finishes.
+    # Fire-and-forget: delivery not yet known, returns None; POST not done yet.
+    assert ok is None
     assert not client.completed.is_set()
     # The daemon thread still lands the outcome eventually.
     assert client.completed.wait(timeout=2.0)
@@ -73,5 +87,5 @@ def test_emit_billing_event_nonblock_returns_before_outcome():
 def test_emit_billing_event_disabled_is_noop():
     em = TradingSignalBillingEmitter(api_key="")  # disabled (no key)
     assert not em.enabled
-    # Must not raise and must make no client call (there is no client).
-    em.emit_billing_event(trace_id="t3", signal_price=2.00, block=True)
+    # Must not raise, make no client call, and report None (nothing attempted).
+    assert em.emit_billing_event(trace_id="t3", signal_price=2.00, block=True) is None

@@ -219,7 +219,7 @@ class TradingSignalBillingEmitter:
         *,
         block: bool = False,
         block_timeout: float = 10.0,
-    ) -> None:
+    ) -> bool | None:
         """Emit a SUCCESS outcome for a completed trading signal run.
 
         Reports ``outcomeValue=signal_price`` to Revenium's Jobs/Outcomes API so
@@ -250,13 +250,27 @@ class TradingSignalBillingEmitter:
             block_timeout: Max seconds to wait when ``block`` is ``True``; on timeout
                           the (daemon) thread continues best-effort and control
                           returns so the caller never hangs.
+
+        Returns:
+            When ``block`` is ``True``: ``True`` if the outcome POST was accepted,
+            ``False`` if it was dropped (logged), or ``None`` if it was still in
+            flight past ``block_timeout``. When ``block`` is ``False`` (or the
+            emitter is disabled): always ``None`` (delivery not yet known). NOTE:
+            this reflects POST *delivery* only — the Job's PENDING->SUCCESS flip is
+            a separate async reconciliation on the Revenium backend.
         """
         if not self.enabled:
-            return
+            return None
 
         attributed_to = reported_by or self._subscriber_id
         with self._lock:
             meta = dict(self._job_meta.get(trace_id, {}))
+
+        # Captured by the worker thread; read after join() when block=True so the
+        # caller can confirm the outcome POST was accepted (True) vs dropped (False)
+        # vs still-in-flight/timed-out (None). The Job's PENDING->SUCCESS flip is a
+        # separate async Revenium reconciliation — this only reports POST delivery.
+        result: dict[str, bool] = {}
 
         def _report_outcome_safe() -> None:
             try:
@@ -270,6 +284,7 @@ class TradingSignalBillingEmitter:
                     "metadata": json.dumps(meta),
                 }
                 self._client.report_outcome(trace_id, payload)
+                result["ok"] = True
                 logger.debug(
                     "TradingSignalBillingEmitter.emit_billing_event: "
                     "trace_id=%r signal_price=%r result=SUCCESS",
@@ -277,6 +292,7 @@ class TradingSignalBillingEmitter:
                     signal_price,
                 )
             except Exception:  # noqa: BLE001 — fail open, never block the run
+                result["ok"] = False
                 logger.warning(
                     "TradingSignalBillingEmitter: report_outcome failed for trace_id=%r"
                     " signal_price=%r — revenue event dropped",
@@ -296,3 +312,6 @@ class TradingSignalBillingEmitter:
             # its transport or exits the process. _report_outcome_safe is fail-open,
             # so on timeout the thread keeps running best-effort and we return.
             t.join(timeout=block_timeout)
+            # True (accepted) / False (dropped) / None (still in flight past timeout).
+            return result.get("ok")
+        return None

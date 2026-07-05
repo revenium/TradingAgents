@@ -1327,6 +1327,10 @@ def run_analysis(checkpoint: bool = False):
     layout = create_layout()
 
     _rev_ctx = ExitStack()
+    # Outcome-POST delivery result, surfaced after the run: True=accepted,
+    # False=dropped, None=not attempted/timed out. Reflects delivery only — the
+    # Job's PENDING->SUCCESS flip is a separate async Revenium reconciliation.
+    billing_ok: bool | None = None
     try:
         # The CLI streams the graph directly (for the live UI) instead of going
         # through TradingAgentsGraph.propagate(), so the Revenium run lifecycle —
@@ -1532,7 +1536,7 @@ def run_analysis(checkpoint: bool = False):
         # (D-07). Fail-open / no-op without a billing key. block=True waits for the
         # outcome POST to land before the finally's stop_polling / process exit,
         # otherwise the daemon thread is killed mid-POST and the Job stays PENDING.
-        graph._billing_emitter.emit_billing_event(
+        billing_ok = graph._billing_emitter.emit_billing_event(
             trace_id=_trace_id,
             signal_price=config.get("revenium_signal_price", 2.00),
             block=True,
@@ -1556,6 +1560,29 @@ def run_analysis(checkpoint: bool = False):
     # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
+
+    # Immediate billing read-back: confirm the outcome POST landed. This reflects
+    # POST *delivery* only — Revenium flips the Job PENDING->SUCCESS on its own
+    # async reconciliation afterward, so a green line here + a still-PENDING Job in
+    # the dashboard for a few minutes is expected, not a failure.
+    if graph._billing_emitter.enabled:
+        _signal_price = config.get("revenium_signal_price", 2.00)
+        if billing_ok is True:
+            console.print(
+                f"[green]✓ Revenium billing:[/green] ${_signal_price:.2f} outcome "
+                f"accepted for job [dim]{_trace_id[:8]}[/dim] — the Job flips to "
+                f"SUCCESS/CONVERTED once Revenium reconciles (async, allow a few minutes)."
+            )
+        elif billing_ok is False:
+            console.print(
+                "[yellow]⚠ Revenium billing:[/yellow] outcome report FAILED (see logs) — "
+                "the Job will stay PENDING. Check REVENIUM_SK_API_KEY / profitstream host."
+            )
+        else:  # None — timed out with the POST still in flight
+            console.print(
+                "[yellow]⚠ Revenium billing:[/yellow] outcome POST still in flight past "
+                "the wait window — the Job may take longer to convert; check the Jobs dashboard."
+            )
 
     # Prompt to save report
     save_choice = typer.prompt("Save report?", default="Y").strip().upper()
