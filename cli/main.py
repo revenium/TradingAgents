@@ -2,6 +2,7 @@ import datetime
 import os
 import time
 from collections import deque
+from contextlib import ExitStack
 from functools import wraps
 from pathlib import Path
 
@@ -49,6 +50,7 @@ from tradingagents.graph.analyst_execution import (
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import provider_for_model
+from tradingagents.revenium.context import revenium_run_context
 
 console = Console()
 
@@ -1324,7 +1326,32 @@ def run_analysis(checkpoint: bool = False):
     # Now start the display layout
     layout = create_layout()
 
+    _rev_ctx = ExitStack()
     try:
+        # The CLI streams the graph directly (for the live UI) instead of going
+        # through TradingAgentsGraph.propagate(), so the Revenium run lifecycle —
+        # trace context, Job record, and outcome — must be opened here too, or CLI
+        # runs produce metering with no trace_id and no billing job (monetize gap).
+        # Every step below is fail-open and a no-op when the relevant key is absent.
+        _trace_id = _rev_ctx.enter_context(
+            revenium_run_context(
+                ticker=selections["ticker"],
+                trade_date=str(selections["analysis_date"]),
+            )
+        )
+        # begin_run sets handler-instance trace state so LLM events carry the
+        # trace_id; revenium_run_context (above) sets current_trace_id so @meter_tool
+        # tool events share the SAME trace — correlating tool cost to the job.
+        revenium_handler.begin_run(
+            _trace_id, selections["ticker"], str(selections["analysis_date"])
+        )
+        # Open the Revenium Job record BEFORE streaming so revenue correlates to AI
+        # cost via trace_id in the Costs & Revenue dashboard (BIL-02/D-08).
+        graph._billing_emitter.create_trading_signal_job(
+            trace_id=_trace_id,
+            ticker=selections["ticker"],
+            trade_date=str(selections["analysis_date"]),
+        )
         with Live(layout, refresh_per_second=4):
             # Initial display
             update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
@@ -1498,12 +1525,26 @@ def run_analysis(checkpoint: bool = False):
                     message_buffer.update_report_section(section, final_state[section])
 
             update_display(layout, stats_handler=stats_handler, start_time=start_time, revenium_handler=revenium_handler)
+
+        # Reached only on a fully successful stream — a BudgetExceededError would
+        # have propagated out of the Live block above (D-10: halted runs emit no
+        # outcome). Emit one priced outcome for the completed signal: flat $2.00
+        # (D-07). Fail-open / no-op without a billing key.
+        graph._billing_emitter.emit_billing_event(
+            trace_id=_trace_id,
+            signal_price=config.get("revenium_signal_price", 2.00),
+        )
     except BudgetExceededError as err:
         # Run halted by Revenium enforcement (CTL-02).
         # The Live context has already exited before the except handler runs.
         _render_budget_halt_panel(console, err, revenium_handler)
         raise typer.Exit(code=1) from err
     finally:
+        # Close the Revenium run lifecycle (mirror _run_graph's finally): clear the
+        # handler trace state and reset the trace contextvars so nothing bleeds into
+        # a later run. Both are fail-open. Order: clear state, then teardown poller.
+        revenium_handler.end_run()
+        _rev_ctx.close()
         # Stop the enforcement daemon thread on every exit path (normal + halt).
         # Safe to call unconditionally — no-op if thread was never started.
         stop_polling()
