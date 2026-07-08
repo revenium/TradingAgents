@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: CLI Cost Panel & Billing Monetization** - Add a live per-agent cost panel to the Rich CLI and emit a priced "cost per trading signal" billing event (completed 2026-06-29)
 - [ ] **Phase 5: Demo Narrative & Hardening** - Make the meter → trace → control → monetize arc repeatable, pre-flight checked, and stage-reliable
 - [x] **Phase 6: Jentic Tool Metering & Monetization** - Weave Jentic's tool-execution SDK into the news analyst; meter + price every external API call through Revenium's tool-event pipeline (completed 2026-07-03)
-- [ ] **Phase 7: Pilot Partner Integrations** - Mock Edgehound / Trinigence / SAIF as Revenium-metered+priced tools/gates; Revenium as the neutral FinOps layer across a multi-partner agentic ecosystem
+- [x] **Phase 7: Pilot Partner Integrations** - Mock Edgehound / Trinigence / SAIF as Revenium-metered+priced tools/gates; Revenium as the neutral FinOps layer across a multi-partner agentic ecosystem (completed 2026-07-03)
 
 ## Phase Details
 
@@ -193,7 +193,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 (parallel with 3) → 5
 | 4. CLI Cost Panel & Billing Monetization | 3/4 | Complete    | 2026-06-29 |
 | 5. Demo Narrative & Hardening | 0/? | Not started | - |
 | 6. Jentic Tool Metering & Monetization | 3/3 | Complete   | 2026-07-03 |
-| 7. Pilot Partner Integrations | 0/? | Not started | - |
+| 7. Pilot Partner Integrations | 3/3 | Complete    | 2026-07-03 |
 
 ### Phase 6: Jentic Tool Metering & Monetization
 
@@ -248,9 +248,9 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 (parallel with 3) → 5
 **Plans**: 3 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — Edgehound decision-intelligence mock tool (metered+priced, wired into market analyst)
-- [ ] 07-02-PLAN.md — Trinigence NL→strategy mock tool (metered+priced, wired into market analyst)
-- [ ] 07-03-PLAN.md — SAIF assurance gate on PM decision (metered+priced) + 3-partner ToolResource registration + combined keyless integration test
+- [x] 07-01-PLAN.md — Edgehound decision-intelligence mock tool (metered+priced, wired into market analyst)
+- [x] 07-02-PLAN.md — Trinigence NL→strategy mock tool (metered+priced, wired into market analyst)
+- [x] 07-03-PLAN.md — SAIF assurance gate on PM decision (metered+priced) + 3-partner ToolResource registration + combined keyless integration test
 
 **Planning notes (scoping locked 2026-07-03):**
 
